@@ -162,6 +162,19 @@
   const STROKE_GAP = 0.03; // pen-lift pause between strokes of one glyph
   const CHAR_GAP = 0.045; // pause between characters
 
+  // Human pacing: no two strokes are drawn at the same clip. Each
+  // stroke gets its own tempo, plus a slow speed undulation along the
+  // path; every pen-lift pause is a different length, and now and then
+  // the writer plain hesitates.
+  const TEMPO_RANGE = [0.72, 1.28]; // per-stroke speed multiplier
+  const SPEED_WOBBLE = 0.28; // fraction of within-stroke speed swing
+  const SPEED_WOBBLE_LEN = 420; // font units per swing cycle
+  const GAP_RANGE = [0.4, 1.9]; // pause multiplier, drawn fresh per pause
+  const HESITATE_CHANCE = 0.07;
+  const HESITATE_EXTRA = 0.22; // seconds
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+
   // Ink layers, light-to-dark: each stroke is drawn as stacked copies of
   // the same path, the lead one thin and light (a light-pressure wet
   // edge at the pen tip), the trailing ones darker and full-width on a
@@ -295,22 +308,39 @@
         svgPts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join("L") +
         (s.closed ? "Z" : "");
       const len = polylineLength(svgPts, s.closed);
+      // Ink randomness: each stroke's layers get their own delays,
+      // opacities, widths, and absorption rate, so the fade-in blotches
+      // unevenly -- some strokes soak dark fast, others stay wet.
       const layers = INK_LAYERS.map((spec) => {
         const path = document.createElementNS(SVG_NS, "path");
         path.setAttribute("d", d);
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", "currentColor");
-        path.setAttribute("stroke-opacity", spec.opacity);
-        path.setAttribute("stroke-width", s.w * spec.wScale);
+        path.setAttribute(
+          "stroke-opacity",
+          Math.min(0.97, spec.opacity * rand(0.82, 1.12)).toFixed(3)
+        );
+        path.setAttribute("stroke-width", s.w * spec.wScale * rand(0.95, 1.04));
         path.setAttribute("stroke-linecap", "round");
         path.setAttribute("stroke-linejoin", "round");
         // +2 so the dash seam on closed loops doesn't leak a dot.
         path.setAttribute("stroke-dasharray", len + 2);
         path.setAttribute("stroke-dashoffset", len + 2);
         svg.appendChild(path);
-        return { el: path, delay: spec.delay };
+        return { el: path, delay: spec.delay * rand(0.6, 1.6) };
       });
-      return { layers, len, pts: svgPts, closed: s.closed, w: s.w, entry };
+      return {
+        layers,
+        len,
+        pts: svgPts,
+        closed: s.closed,
+        w: s.w,
+        entry,
+        tempo: rand(...TEMPO_RANGE),
+        speedPhase: rand(0, 2 * Math.PI),
+        speedLen: SPEED_WOBBLE_LEN * rand(0.7, 1.4),
+        absorb: rand(0.55, 1.15),
+      };
     });
 
     const pen = document.createElementNS(SVG_NS, "circle");
@@ -409,7 +439,7 @@
         // appears instantly.
         if (current.node) current.node.classList.remove("pending");
         finishEntry(current);
-        gap = CHAR_GAP / 2;
+        gap = (CHAR_GAP / 2) * rand(...GAP_RANGE);
         current = null;
         return;
       }
@@ -424,17 +454,26 @@
 
     const entry = current;
     const stroke = entry.paths[entry.strokeIdx];
-    stroke.pen = Math.min(stroke.len, stroke.pen + PEN_SPEED * dt);
+    const undulation =
+      1 +
+      SPEED_WOBBLE *
+        Math.sin((2 * Math.PI * stroke.pen) / stroke.speedLen + stroke.speedPhase);
+    stroke.pen = Math.min(
+      stroke.len,
+      stroke.pen + PEN_SPEED * stroke.tempo * undulation * dt
+    );
 
     if (stroke.pen >= stroke.len) {
       entry.strokeIdx += 1;
       if (entry.strokeIdx >= entry.paths.length) {
         finishEntry(entry);
         current = null;
-        gap = CHAR_GAP;
+        gap =
+          CHAR_GAP * rand(...GAP_RANGE) +
+          (Math.random() < HESITATE_CHANCE ? HESITATE_EXTRA : 0);
       } else {
         beginStroke(entry.paths[entry.strokeIdx]);
-        gap = STROKE_GAP;
+        gap = STROKE_GAP * rand(...GAP_RANGE);
       }
     } else {
       const [px, py] = pointAt(stroke.pts, stroke.closed, stroke.pen);
@@ -454,10 +493,19 @@
       stroke.elapsed += dt;
       let done = true;
       for (const layer of stroke.layers) {
-        const drawn = Math.max(
-          0,
-          Math.min(stroke.pen, PEN_SPEED * (stroke.elapsed - layer.delay))
-        );
+        // The lead layer is the wet edge under the pen tip and tracks
+        // it exactly; the trailing layers soak in at the stroke's own
+        // absorption rate, independent of how fast the pen moved.
+        const drawn =
+          layer.delay === 0
+            ? stroke.pen
+            : Math.max(
+                0,
+                Math.min(
+                  stroke.pen,
+                  PEN_SPEED * stroke.absorb * (stroke.elapsed - layer.delay)
+                )
+              );
         layer.el.setAttribute("stroke-dashoffset", stroke.len + 2 - drawn);
         if (drawn < stroke.len) done = false;
       }
