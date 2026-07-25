@@ -1,5 +1,6 @@
 """Assemble a TTF from glyph contours using fontTools' low-level FontBuilder API."""
 
+from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 
@@ -53,6 +54,7 @@ def build_font(
     family_name: str,
     style_name: str,
     out_path: str,
+    features: str | None = None,
 ) -> None:
     glyph_order = [".notdef"] + [n for n in glyphs if n != ".notdef"]
 
@@ -101,5 +103,8 @@ def build_font(
         fsSelection=fs_selection,
     )
     fb.setupPost()
+
+    if features is not None:
+        addOpenTypeFeaturesFromString(fb.font, features)
 
     fb.save(out_path)

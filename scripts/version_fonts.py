@@ -21,6 +21,7 @@ FONTS = {
     "aperture-sans.ttf": "Aperture Sans",
     "aperture-serif.ttf": "Aperture Serif",
     "aperture-script.ttf": "Aperture Script",
+    "aperture-hand.ttf": "Aperture Hand",
 }
 STYLE = "Regular"
 
