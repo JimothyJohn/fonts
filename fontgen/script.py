@@ -48,8 +48,23 @@ EXIT_ZONE_Y = (-30, 290)
 # its apex, closing the loop where it leaves the stem near x-height --
 # the classic looped l. Descenders on p/q get the mirrored loop below
 # the baseline; q loops right instead of left, per cursive convention.
-ASC_LOOP_LETTERS = set("bdfhkl")
+# f is excluded: its skeleton already hooks at the top, and a loop on
+# top of the hook turned the letter into an unreadable knot.
+ASC_LOOP_LETTERS = set("bdhkl")
 DESC_LOOP_SIDE = {"p": -1, "q": 1}
+
+# Letters whose pen finishes somewhere a rising baseline tail would
+# cross the letter's own ink (descender flicks and hooks on g/y, q's
+# under-loop; j's hook was always excluded by geometry). They exit
+# through their descender instead, like real cursive.
+NO_TAIL = set("gqy")
+
+# Letters that join the next letter from the TOP in real handwriting:
+# o closes its bowl at the top right, v/w finish their last upstroke at
+# x-height. A baseline tail on these read as a completely different
+# letter (o + low tail = a; v/w + low tail = checkmarks).
+TOP_EXIT = set("ovw")
+TOP_JOIN_Y = X_HEIGHT * 0.72
 LOOP_W = 105
 ASC_CROSS_Y = X_HEIGHT * 0.58
 ASC_MIN_TOP = 660
@@ -122,6 +137,36 @@ def _exit_tail(strokes: list[dict]) -> dict | None:
     # more pen-like swash than an even S-curve.
     c1 = (start[0] + span * 0.22, start[1] * 0.12)
     c2 = (end[0] - span * 0.30, JOIN_Y * 0.18)
+    width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
+    return {"pts": _cubic(start, c1, c2, end), "width": width, "closed": False}
+
+
+def _top_exit_tail(strokes: list[dict]) -> dict | None:
+    """A short swash leaving the letter high: from the rightmost open
+    endpoint near x-height (v/w's final upstroke), or -- for closed
+    bowls like o -- the upper-right of the bowl, easing right and down
+    to the top join height."""
+    high = [
+        p
+        for s in strokes
+        if not s["closed"] and len(s["pts"]) >= 2
+        for p in (s["pts"][0], s["pts"][-1])
+        if p[1] >= X_HEIGHT * 0.8
+    ]
+    if high:
+        start = max(high, key=lambda p: p[0])
+    else:
+        start = max(
+            (p for s in strokes for p in s["pts"]),
+            key=lambda p: p[0] + 0.6 * p[1],
+        )
+    x_max = max(x for s in strokes for x, _ in s["pts"])
+    end = (x_max + REACH * 0.75, TOP_JOIN_Y)
+    span = end[0] - start[0]
+    if span <= 0:
+        return None
+    c1 = (start[0] + span * 0.45, start[1] + 12)
+    c2 = (end[0] - span * 0.3, end[1] + 30)
     width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
     return {"pts": _cubic(start, c1, c2, end), "width": width, "closed": False}
 
@@ -205,9 +250,11 @@ def script_strokes(name: str, fn) -> list[dict]:
         # Tail before bowing: the exit point must come from the authored
         # geometry -- a bowed stem gains interior points that would
         # otherwise masquerade as exit candidates (j grew a bogus tail).
-        tail = _exit_tail(strokes)
-        if tail is not None:
-            strokes = strokes + [tail]
+        if name not in NO_TAIL:
+            make_tail = _top_exit_tail if name in TOP_EXIT else _exit_tail
+            tail = make_tail(strokes)
+            if tail is not None:
+                strokes = strokes + [tail]
     return _slant(_naturalize(name, strokes))
 
 

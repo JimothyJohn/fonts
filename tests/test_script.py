@@ -4,7 +4,15 @@ from fontgen.build import build_font, normalize_spacing
 from fontgen.glyphs import CMAP, GLYPHS, SKELETONS
 from fontgen.metrics import CAP
 from fontgen.primitives import finalize, record_strokes, rect
-from fontgen.script import LOWERCASE, SLANT, make_glyphs, script_strokes
+from fontgen.script import (
+    LOWERCASE,
+    NO_TAIL,
+    SLANT,
+    TOP_EXIT,
+    TOP_JOIN_Y,
+    make_glyphs,
+    script_strokes,
+)
 
 SCRIPT_GLYPHS = make_glyphs(SKELETONS)
 
@@ -22,17 +30,30 @@ def test_cmap_covered():
         assert glyph_name in SCRIPT_GLYPHS
 
 
-# j is the one lowercase letter with no exit tail: its pen finishes on
-# the descender hook, below baseline and heading left -- there is no
-# natural join point, so _exit_point correctly finds nothing.
-TAILED = sorted(LOWERCASE - {"j"})
+# No-tail letters: j's pen finishes on the descender hook with no
+# natural join point, and g/q/y exit through their descenders (a rising
+# baseline tail crossed their own ink).
+TAILED = sorted(LOWERCASE - {"j"} - NO_TAIL)
 
 
-def test_j_gets_no_tail():
+@pytest.mark.parametrize(
+    "name,extra",
+    [("j", 0), ("g", 0), ("y", 0), ("q", 1)],  # q's extra stroke is its loop
+)
+def test_no_tail_letters(name, extra):
     with record_strokes() as sans_strokes:
-        SKELETONS["j"]()
-    strokes = script_strokes("j", SKELETONS["j"])
-    assert len(strokes) == len(sans_strokes)
+        SKELETONS[name]()
+    strokes = script_strokes(name, SKELETONS[name])
+    assert len(strokes) == len(sans_strokes) + extra
+
+
+@pytest.mark.parametrize("name", sorted(TOP_EXIT))
+def test_top_exit_tails_end_high(name):
+    """o/v/w join the next letter from the top: their tail's endpoint
+    must sit at the top join height, not down at baseline-join level."""
+    strokes = script_strokes(name, SKELETONS[name])
+    tail_end_y = strokes[-1]["pts"][-1][1]
+    assert tail_end_y == pytest.approx(TOP_JOIN_Y)
 
 
 @pytest.mark.parametrize("name", TAILED)
@@ -86,7 +107,7 @@ def test_long_straight_strokes_are_bowed():
     assert abs(mid[0] - chord_x) > 5
 
 
-@pytest.mark.parametrize("name", sorted("bdfhkl"))
+@pytest.mark.parametrize("name", sorted("bdhkl"))
 def test_ascender_loops_added(name):
     with record_strokes() as sans_strokes:
         SKELETONS[name]()
@@ -95,12 +116,22 @@ def test_ascender_loops_added(name):
     assert len(strokes) == len(sans_strokes) + 2
 
 
-@pytest.mark.parametrize("name", ["p", "q"])
-def test_descender_loops_added(name):
+def test_f_gets_tail_but_no_loop():
+    """f's own top hook plus an ascender loop was an unreadable knot --
+    it keeps the exit tail only."""
+    with record_strokes() as sans_strokes:
+        SKELETONS["f"]()
+    strokes = script_strokes("f", SKELETONS["f"])
+    assert len(strokes) == len(sans_strokes) + 1
+
+
+# p: loop + exit tail; q: loop only (no tail, it exits through the loop)
+@pytest.mark.parametrize("name,extra", [("p", 2), ("q", 1)])
+def test_descender_loops_added(name, extra):
     with record_strokes() as sans_strokes:
         SKELETONS[name]()
     strokes = script_strokes(name, SKELETONS[name])
-    assert len(strokes) == len(sans_strokes) + 2
+    assert len(strokes) == len(sans_strokes) + extra
 
 
 def test_script_deterministic():

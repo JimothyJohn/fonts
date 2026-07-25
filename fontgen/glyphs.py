@@ -33,6 +33,7 @@ from fontgen.primitives import (
     arc_band,
     disc,
     ellipse_band,
+    ellipse_pts,
     finalize,
     rect,
     ring,
@@ -99,40 +100,32 @@ def _stem_bowl(stem_x, stem_top, stem_bottom, bowl_cy, bowl_r, bulge):
 
 
 def _s_curve(L, R, T, B):
-    """S's skeleton (also used for s, 5): a single centerline path where x
-    traces an S-shaped reverse curve (top bulges left, bottom bulges
-    right) and y goes linearly from top to bottom, stroked as one
-    polyline.
+    """S's skeleton (also used for s, 5): two stacked elliptical arcs
+    sampled into ONE polyline, meeting tangentially at the waist.
 
-    Two earlier arc-based approaches both failed: a right-angle zigzag read
-    as swastika-like at this weight, and building the top/bottom hooks as
-    two separately-stroked circular arcs (whether unioned afterward or
-    sampled into one skeleton) never got the reverse-curve handedness and
-    the join right at the same time -- forcing the two circles to meet at
-    a shared point either broke the mirrored bulge direction or left a
-    long straight jump at the waist. A sine curve gives the reverse-curve
-    handedness for free (it's an odd function about its midpoint, so the
-    top half bulges one way and the bottom half bulges the other,
-    crossing the centerline exactly once) -- the sign picks *which* side
-    bulges at top vs bottom, and a Hermite ease on the parameter (instead
-    of sweeping the angle at a constant rate) flattens the tangent at the
-    top/bottom terminals while keeping the waist crossing steep, so it
-    reads as a letterform instead of a uniform squiggle.
+    Earlier attempts, for the record: a right-angle zigzag read as
+    swastika-like at this weight; an eased sine gave the reverse-curve
+    handedness but its long straight waist crossing still read as a
+    lightning bolt; and two separately-stroked circles never joined
+    cleanly. The construction that works: the top arc's LOWEST point and
+    the bottom arc's HIGHEST point are the same point with the same
+    (horizontal) tangent, so sampling top-arc-then-bottom-arc into one
+    skeleton is smooth by construction. Handedness comes from sweep
+    direction: the top arc runs CCW from its upper-right mouth over the
+    top and down the left side to its bottom; the bottom arc continues
+    CW from its top down the right side and around, mouth at lower
+    left. Top slightly smaller than bottom, as in most S's.
     """
     cx = (L + R) / 2
     margin = 12
-    half_width = (R - L) / 2
-    amplitude = half_width * 0.95
-    top_y = T - margin
-    bot_y = B + margin
-    n = 60
-    skeleton = []
-    for i in range(n + 1):
-        t = i / n
-        eased = 3 * t * t - 2 * t * t * t
-        x = cx - amplitude * math.sin(math.radians(360 * eased))
-        y = top_y - t * (top_y - bot_y)
-        skeleton.append((x, y))
+    height = (T - margin) - (B + margin)
+    ry_top = height / 2 * 0.46
+    ry_bot = height / 2 - ry_top
+    rx_top = (R - L) / 2 * 0.82
+    rx_bot = (R - L) / 2 * 0.95
+    top = ellipse_pts(cx, T - margin - ry_top, rx_top, ry_top, 35, 270)
+    bottom = ellipse_pts(cx, B + margin + ry_bot, rx_bot, ry_bot, 90, -125)
+    skeleton = top + bottom[1:]
     return [stroke_union([skeleton], STROKE, cap_style="round")]
 
 
@@ -186,24 +179,6 @@ def _basin(x0, x1, y_top, y_bottom):
         _chain([(x1, y_top), (x1, bowl_cy)]),
         _bowl((x0 + x1) / 2, bowl_cy, r, 180, 360),
     ]
-
-
-def _a_d_flourish(stem_x, y_top, y_bottom):
-    """A short, slightly non-linear diagonal flick off the stem at the top
-    and bottom -- a bare bowl+stem read as too plain next to the rest of
-    the lowercase set. This is a two-segment polyline rather than a single
-    straight line: it starts steeper, off the corner, then eases toward a
-    shallower angle, which is what gives it a bit of organic flair instead
-    of reading as a ruler-straight serif.
-    """
-
-    def flick(y, sign):
-        p0 = (stem_x, y)
-        p1 = (stem_x + 20, y + sign * 38)
-        p2 = (stem_x + 60, y + sign * 58)
-        return _chain([p0, p1, p2])
-
-    return [flick(y_top, 1), flick(y_bottom, -1)]
 
 
 # ---- straight-line uppercase ------------------------------------------------
@@ -636,10 +611,15 @@ def glyph_question(L=90, R=530, T=CAP):
 
 
 def glyph_a_lc():
+    # Plain single-storey a: bowl + stem, nothing else. The diagonal
+    # flicks this used to carry made it read as a broken-ascender d.
     stem_x = 420
     shapes = _stem_bowl(stem_x, X_HEIGHT, BASE, XMID, LOWER_RING_R, "left")
-    shapes += _a_d_flourish(stem_x, X_HEIGHT, BASE)
-    return shapes, 520, []
+    terminals = [
+        ((stem_x, X_HEIGHT), (stem_x, BASE)),
+        ((stem_x, BASE), (stem_x, X_HEIGHT)),
+    ]
+    return shapes, 520, terminals
 
 
 def glyph_b_lc():
@@ -653,8 +633,10 @@ def glyph_b_lc():
 def glyph_d_lc():
     stem_x = 420
     shapes = _stem_bowl(stem_x, CAP, BASE, XMID, LOWER_RING_R, "left")
-    shapes += _a_d_flourish(stem_x, X_HEIGHT, BASE)
-    terminals = [((stem_x, CAP), (stem_x, BASE))]
+    terminals = [
+        ((stem_x, CAP), (stem_x, BASE)),
+        ((stem_x, BASE), (stem_x, CAP)),
+    ]
     return shapes, 540, terminals
 
 
@@ -688,12 +670,15 @@ def glyph_g_lc():
     bowl_r = LOWER_RING_R
     y_top = XMID + bowl_r
     y_bottom = XMID - bowl_r
-    hook_r = 110
+    # A fuller hook than j's: bigger radius, curling further back up
+    # (-240 vs -200), so the descender reads as g's under-loop rather
+    # than a clipped flick that left the letter looking like a 9.
+    hook_r = 130
     hook_cy = DESCENT + hook_r
     shapes = [
         _chain([(stem_x, hook_cy - 5), (stem_x, y_top)]),
         _bulge_bowl(stem_x, y_bottom, y_top, bowl_r, "left"),
-        _bowl(stem_x - hook_r, hook_cy, hook_r, 0, -200),
+        _bowl(stem_x - hook_r, hook_cy, hook_r, 0, -240),
     ]
     return shapes, 540, []
 
@@ -709,13 +694,15 @@ def glyph_c_lc():
 
 
 def glyph_e_lc():
+    # A real e: the bar crosses at mid-height and meets the bowl exactly
+    # where the arc starts (angle 0, right side), sealing the eye; the
+    # arc sweeps over the top and around, leaving the aperture at the
+    # LOWER right (between 305 and 360 degrees) -- the previous version
+    # opened at mid-right, which read as a struck-through epsilon.
     cx, cy, r = 260, XMID, LOWER_RING_R - STROKE / 2
     shapes = [
-        _bowl(cx, cy, r, 20, 340, cap_style="round"),
-        # Stops well short of the bowl's own right edge -- reaching all
-        # the way to cx + r closed the aperture the bowl's gap leaves on
-        # the right, making the counter read as sealed shut.
-        _chain([(cx - r, cy), (cx + r * 0.35, cy)]),
+        _bowl(cx, cy, r, 0, 305, cap_style="round"),
+        _chain([(cx - r, cy), (cx + r, cy)]),
     ]
     return shapes, 500, []
 
@@ -757,14 +744,18 @@ def glyph_u_lc(L=70, R=410):
 
 
 def glyph_r_lc():
+    # Stem plus a wide open shoulder: the arm leaves the stem partway
+    # up, arcs over tangent to x-height, and ends free at the upper
+    # right. The old 110-unit quarter-circle hugged the stem so tightly
+    # the whole letter read as an iota.
     stem_x = 70
-    hook_r = 110
+    arm_r = 150
     shapes = [
         _chain([(stem_x, BASE), (stem_x, X_HEIGHT)]),
-        _bowl(stem_x, X_HEIGHT - hook_r, hook_r, 0, 90),
+        _bowl(stem_x + arm_r, X_HEIGHT - arm_r, arm_r, 180, 15, cap_style="round"),
     ]
     terminals = [((stem_x, BASE), (stem_x, X_HEIGHT))]
-    return shapes, 380, terminals
+    return shapes, 460, terminals
 
 
 def glyph_v_lc(L=70, R=410):
