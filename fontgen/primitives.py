@@ -45,7 +45,10 @@ def record_strokes():
 
 def _record(pts: list[Point], width: float, closed: bool = False) -> None:
     if _RECORDER is not None and len(pts) >= 1:
-        _RECORDER.append({"pts": [tuple(p) for p in pts], "width": width, "closed": closed})
+        _RECORDER.append(
+            {"pts": [tuple(p) for p in pts], "width": width, "closed": closed}
+        )
+
 
 # Segments per full circle when approximating curves/round joins. Higher is
 # smoother; this is the shared knob for how "curvy" round strokes look.
