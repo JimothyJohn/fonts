@@ -143,11 +143,22 @@
   const STROKES_URL = "../out/strokes.json";
 
   // Pen pacing, in font units of pen travel per second plus pauses. A
-  // cap-height stem is 700 units, so a typical letter takes ~0.3-0.7s --
-  // slower than fast typing, which is what produces the catch-up lag.
-  const PEN_SPEED = 2600;
-  const STROKE_GAP = 0.055; // pen-lift pause between strokes of one glyph
-  const CHAR_GAP = 0.08; // pause between characters
+  // cap-height stem is 700 units, so a typical letter takes ~0.15-0.35s --
+  // still slower than fast typing, which is what produces the catch-up lag.
+  const PEN_SPEED = 5000;
+  const STROKE_GAP = 0.03; // pen-lift pause between strokes of one glyph
+  const CHAR_GAP = 0.045; // pause between characters
+
+  // Ink layers, light-to-dark: each stroke is drawn as stacked copies of
+  // the same path, the lead one thin and light (a light-pressure wet
+  // edge at the pen tip), the trailing ones darker and full-width on a
+  // time delay -- fresh ink lays down light and "absorbs" darker over
+  // the next ~0.3s, even while the pen has moved on to later strokes.
+  const INK_LAYERS = [
+    { delay: 0, opacity: 0.32, wScale: 0.86 },
+    { delay: 0.12, opacity: 0.5, wScale: 0.94 },
+    { delay: 0.28, opacity: 0.85, wScale: 1 },
+  ];
 
   // Per-stamp scrawl jitter, mirroring fontgen/jitter.py's ranges.
   const JITTER = {
@@ -263,18 +274,22 @@
         svgPts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join("L") +
         (s.closed ? "Z" : "");
       const len = polylineLength(svgPts, s.closed);
-      const path = document.createElementNS(SVG_NS, "path");
-      path.setAttribute("d", d);
-      path.setAttribute("fill", "none");
-      path.setAttribute("stroke", "currentColor");
-      path.setAttribute("stroke-width", s.w);
-      path.setAttribute("stroke-linecap", "round");
-      path.setAttribute("stroke-linejoin", "round");
-      // +2 so the dash seam on closed loops doesn't leak a dot.
-      path.setAttribute("stroke-dasharray", len + 2);
-      path.setAttribute("stroke-dashoffset", len + 2);
-      svg.appendChild(path);
-      return { el: path, len, pts: svgPts, closed: s.closed, w: s.w };
+      const layers = INK_LAYERS.map((spec) => {
+        const path = document.createElementNS(SVG_NS, "path");
+        path.setAttribute("d", d);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", "currentColor");
+        path.setAttribute("stroke-opacity", spec.opacity);
+        path.setAttribute("stroke-width", s.w * spec.wScale);
+        path.setAttribute("stroke-linecap", "round");
+        path.setAttribute("stroke-linejoin", "round");
+        // +2 so the dash seam on closed loops doesn't leak a dot.
+        path.setAttribute("stroke-dasharray", len + 2);
+        path.setAttribute("stroke-dashoffset", len + 2);
+        svg.appendChild(path);
+        return { el: path, delay: spec.delay };
+      });
+      return { layers, len, pts: svgPts, closed: s.closed, w: s.w, entry };
     });
 
     const pen = document.createElementNS(SVG_NS, "circle");
@@ -332,12 +347,15 @@
     flushWord();
   }
 
-  // ---- the writer: one pen, drawing pending characters in text order ----
+  // ---- the writer: one pen, drawing pending characters in text order.
+  // Strokes the pen has touched live in `settling` until every ink layer
+  // has caught up -- absorption continues while the pen moves on. ----
 
   let current = null;
   let gap = 0;
   let rafId = null;
   let lastTs = null;
+  const settling = new Set();
 
   function ensureWriting() {
     if (rafId === null) {
@@ -347,9 +365,88 @@
   }
 
   function finishEntry(entry) {
-    for (const p of entry.paths) p.el.setAttribute("stroke-dashoffset", 0);
     if (entry.pen) entry.pen.setAttribute("opacity", "0");
     entry.state = "done";
+  }
+
+  function beginStroke(stroke) {
+    stroke.elapsed = 0;
+    stroke.pen = 0;
+    settling.add(stroke);
+  }
+
+  function writerStep(dt) {
+    if (current && (current.removed || current.state === "done")) current = null;
+
+    if (!current) {
+      current = charData.find((e) => e.state === "pending") || null;
+      if (!current) return;
+      current.state = "writing";
+      current.strokeIdx = 0;
+      if (current.paths.length === 0) {
+        // Space, newline (no node of its own), or fallback span:
+        // appears instantly.
+        if (current.node) current.node.classList.remove("pending");
+        finishEntry(current);
+        gap = CHAR_GAP / 2;
+        current = null;
+        return;
+      }
+      current.node.classList.remove("pending");
+      beginStroke(current.paths[0]);
+    }
+
+    if (gap > 0) {
+      gap -= dt;
+      return;
+    }
+
+    const entry = current;
+    const stroke = entry.paths[entry.strokeIdx];
+    stroke.pen = Math.min(stroke.len, stroke.pen + PEN_SPEED * dt);
+
+    if (stroke.pen >= stroke.len) {
+      entry.strokeIdx += 1;
+      if (entry.strokeIdx >= entry.paths.length) {
+        finishEntry(entry);
+        current = null;
+        gap = CHAR_GAP;
+      } else {
+        beginStroke(entry.paths[entry.strokeIdx]);
+        gap = STROKE_GAP;
+      }
+    } else {
+      const [px, py] = pointAt(stroke.pts, stroke.closed, stroke.pen);
+      entry.pen.setAttribute("cx", px);
+      entry.pen.setAttribute("cy", py);
+      entry.pen.setAttribute("r", stroke.w * 0.45);
+      entry.pen.setAttribute("opacity", "0.9");
+    }
+  }
+
+  function settleStep(dt) {
+    for (const stroke of settling) {
+      if (stroke.entry.removed) {
+        settling.delete(stroke);
+        continue;
+      }
+      stroke.elapsed += dt;
+      let done = true;
+      for (const layer of stroke.layers) {
+        const drawn = Math.max(
+          0,
+          Math.min(stroke.pen, PEN_SPEED * (stroke.elapsed - layer.delay))
+        );
+        layer.el.setAttribute("stroke-dashoffset", stroke.len + 2 - drawn);
+        if (drawn < stroke.len) done = false;
+      }
+      if (done) {
+        for (const layer of stroke.layers) {
+          layer.el.setAttribute("stroke-dashoffset", 0);
+        }
+        settling.delete(stroke);
+      }
+    }
   }
 
   function tick(ts) {
@@ -358,61 +455,15 @@
     const dt = Math.min(0.05, (ts - lastTs) / 1000);
     lastTs = ts;
 
-    if (current && (current.removed || current.state === "done")) current = null;
+    writerStep(dt);
+    settleStep(dt);
 
-    if (!current) {
-      current = charData.find((e) => e.state === "pending") || null;
-      if (!current) return; // idle; ensureWriting() restarts us on input
-      current.state = "writing";
-      current.strokeIdx = 0;
-      current.progress = 0;
-      if (current.paths.length === 0) {
-        // Space, newline (no node of its own), or fallback span:
-        // appears instantly.
-        if (current.node) current.node.classList.remove("pending");
-        finishEntry(current);
-        gap = CHAR_GAP / 2;
-        current = null;
-        rafId = requestAnimationFrame(tick);
-        return;
-      }
-      current.node.classList.remove("pending");
-    }
-
-    if (gap > 0) {
-      gap -= dt;
-      rafId = requestAnimationFrame(tick);
-      return;
-    }
-
-    const entry = current;
-    entry.progress += PEN_SPEED * dt;
-    const stroke = entry.paths[entry.strokeIdx];
-
-    if (entry.progress >= stroke.len) {
-      stroke.el.setAttribute("stroke-dashoffset", 0);
-      entry.strokeIdx += 1;
-      entry.progress = 0;
-      if (entry.strokeIdx >= entry.paths.length) {
-        finishEntry(entry);
-        current = null;
-        gap = CHAR_GAP;
-      } else {
-        gap = STROKE_GAP;
-      }
-    } else {
-      stroke.el.setAttribute(
-        "stroke-dashoffset",
-        stroke.len + 2 - entry.progress
-      );
-      const [px, py] = pointAt(stroke.pts, stroke.closed, entry.progress);
-      entry.pen.setAttribute("cx", px);
-      entry.pen.setAttribute("cy", py);
-      entry.pen.setAttribute("r", stroke.w * 0.45);
-      entry.pen.setAttribute("opacity", "0.9");
-    }
-
-    rafId = requestAnimationFrame(tick);
+    const busy =
+      current !== null ||
+      gap > 0 ||
+      settling.size > 0 ||
+      charData.some((e) => e.state === "pending");
+    if (busy) rafId = requestAnimationFrame(tick);
   }
 
   // ---- input diffing (unchanged idea: only new characters get stamped) ----
