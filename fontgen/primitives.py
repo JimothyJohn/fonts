@@ -11,11 +11,41 @@ contours the TrueType pen expects.
 """
 
 import math
+from contextlib import contextmanager
 
 from shapely import geometry as sg
 from shapely.ops import unary_union
 
 Point = tuple[float, float]
+
+# Active stroke recorder (see record_strokes). When set, every primitive
+# appends the centerline it is about to buffer -- the "pen path" -- so
+# consumers like the handwriting demo can replay how a glyph is drawn
+# without re-deriving skeletons from the filled outlines.
+_RECORDER: list | None = None
+
+
+@contextmanager
+def record_strokes():
+    """Capture the centerline of every primitive built inside the block.
+
+    Yields a list that fills with {"pts", "width", "closed"} dicts in
+    construction order -- which follows each glyph function's authoring
+    order, a natural proxy for pen/stroke order. Nesting restores the
+    outer recorder on exit.
+    """
+    global _RECORDER
+    previous = _RECORDER
+    _RECORDER = strokes = []
+    try:
+        yield strokes
+    finally:
+        _RECORDER = previous
+
+
+def _record(pts: list[Point], width: float, closed: bool = False) -> None:
+    if _RECORDER is not None and len(pts) >= 1:
+        _RECORDER.append({"pts": [tuple(p) for p in pts], "width": width, "closed": closed})
 
 # Segments per full circle when approximating curves/round joins. Higher is
 # smoother; this is the shared knob for how "curvy" round strokes look.
@@ -101,6 +131,7 @@ def stroke_union(
     for pts in point_lists:
         if len(pts) < 2:
             continue
+        _record(list(pts), width, closed=closed)
         line = sg.LinearRing(pts) if closed else sg.LineString(pts)
         shapes.append(
             line.buffer(
@@ -129,6 +160,7 @@ def arc_band(
     cap_style="round" for a free-floating open terminal (e.g. C's ends).
     """
     pts = arc_pts(cx, cy, r, a0, a1)
+    _record(pts, width)
     quad_segs = max(2, CURVE_SEGMENTS // 4)
     return sg.LineString(pts).buffer(
         width / 2, quad_segs=quad_segs, cap_style=cap_style, join_style="round"
@@ -151,6 +183,7 @@ def ellipse_band(
     which bulge out wider than their half-height).
     """
     pts = ellipse_pts(cx, cy, rx, ry, a0, a1)
+    _record(pts, width)
     quad_segs = max(2, CURVE_SEGMENTS // 4)
     return sg.LineString(pts).buffer(
         width / 2, quad_segs=quad_segs, cap_style=cap_style, join_style="round"
@@ -159,6 +192,8 @@ def ellipse_band(
 
 def ring(cx: float, cy: float, r_outer: float, r_inner: float):
     """A full annulus (e.g. 'O')."""
+    r_mid = (r_outer + r_inner) / 2
+    _record(arc_pts(cx, cy, r_mid, 90, 450), r_outer - r_inner, closed=True)
     quad_segs = max(2, CURVE_SEGMENTS // 4)
     outer = sg.Point(cx, cy).buffer(r_outer, quad_segs=quad_segs)
     inner = sg.Point(cx, cy).buffer(r_inner, quad_segs=quad_segs)
@@ -166,11 +201,24 @@ def ring(cx: float, cy: float, r_outer: float, r_inner: float):
 
 
 def rect(x0: float, y0: float, x1: float, y1: float):
+    # Centerline: the midline of the long axis, pulled in by half the short
+    # side at each end so a round-capped stroke covers the same extent. A
+    # square degenerates to a dot.
+    w, h = x1 - x0, y1 - y0
+    if w >= h:
+        cy, half = (y0 + y1) / 2, h / 2
+        a, b = min(x0 + half, (x0 + x1) / 2), max(x1 - half, (x0 + x1) / 2)
+        _record([(a, cy), (max(b, a + 0.5), cy)], h)
+    else:
+        cx, half = (x0 + x1) / 2, w / 2
+        a, b = min(y0 + half, (y0 + y1) / 2), max(y1 - half, (y0 + y1) / 2)
+        _record([(cx, a), (cx, max(b, a + 0.5))], w)
     return sg.box(x0, y0, x1, y1)
 
 
 def disc(cx: float, cy: float, r: float):
     """A filled circle -- used for dots (i, j)."""
+    _record([(cx, cy), (cx + 0.5, cy)], 2 * r)
     quad_segs = max(2, CURVE_SEGMENTS // 4)
     return sg.Point(cx, cy).buffer(r, quad_segs=quad_segs)
 

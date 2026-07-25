@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Typewriter jitter demo</title>
+<title>Aperture scrawl demo</title>
 <style>
   :root {
     --paper: #f3efe6;
@@ -72,10 +72,20 @@
   .printed {
     font-size: clamp(1.6rem, 4vw, 2.6rem);
     line-height: 1.6;
+    color: var(--ink);
   }
 
   .pchar {
     display: inline-block;
+  }
+
+  .pchar.pending {
+    display: none;
+  }
+
+  .pchar svg {
+    display: block;
+    overflow: visible;
   }
 
   .word {
@@ -111,12 +121,12 @@
 </style>
 </head>
 <body>
-  <h1>Aperture Sans &mdash; typewriter jitter</h1>
+  <h1>Aperture Sans &mdash; handwriting scrawl</h1>
   <div class="panel">
-    <textarea id="input" rows="3" disabled placeholder="Loading font variants&hellip;"></textarea>
-    <p class="hint">Type above. Each character is stamped below with a randomly-picked jittered variant of the font &mdash; once printed, it stays put.</p>
+    <textarea id="input" rows="3" disabled placeholder="Loading strokes&hellip;"></textarea>
+    <p class="hint">Type above. Each character is scrawled below stroke by stroke, pen-speed &mdash; type faster than the pen and it lags behind, then catches up. Edits and deletions rewrite in place.</p>
     <div class="sheet">
-      <div class="printed" id="printed"><span class="placeholder">Printed text will appear here as you type&hellip;</span></div>
+      <div class="printed" id="printed"><span class="placeholder">Written text will appear here as you type&hellip;</span></div>
     </div>
     <div class="controls">
       <button id="clear">Clear</button>
@@ -129,18 +139,153 @@
   const printed = document.getElementById("printed");
   const clearBtn = document.getElementById("clear");
 
-  const FONT_DIR = "../out/jitter";
-  let fontFamilies = [];
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const STROKES_URL = "../out/strokes.json";
 
-  // charData[i] = { ch, family } -- assigned once when a character is
-  // first typed, then never reassigned, so printed text is static; only
-  // brand-new characters (from a diff against the previous value) get a
-  // fresh random pick.
+  // Pen pacing, in font units of pen travel per second plus pauses. A
+  // cap-height stem is 700 units, so a typical letter takes ~0.3-0.7s --
+  // slower than fast typing, which is what produces the catch-up lag.
+  const PEN_SPEED = 2600;
+  const STROKE_GAP = 0.055; // pen-lift pause between strokes of one glyph
+  const CHAR_GAP = 0.08; // pause between characters
+
+  // Per-stamp scrawl jitter, mirroring fontgen/jitter.py's ranges.
+  const JITTER = {
+    rotDeg: 1.6,
+    dx: 8,
+    dy: 6,
+    scale: 0.045,
+    widthDelta: 7,
+  };
+
+  let FONT = null; // {upm, ascent, descent, chars}
+
+  // charData[i] = one typed character with its own DOM node and writing
+  // state ("pending" -> "writing" -> "done"). Nodes are created once and
+  // reused across re-renders so an in-progress scrawl survives re-layout.
   let charData = [];
   let previousValue = "";
+  let nextId = 1;
 
-  function randomFamily() {
-    return fontFamilies[(Math.random() * fontFamilies.length) | 0];
+  function jitterParams() {
+    const r = (lim) => (Math.random() * 2 - 1) * lim;
+    return {
+      rot: (r(JITTER.rotDeg) * Math.PI) / 180,
+      dx: r(JITTER.dx),
+      dy: r(JITTER.dy),
+      sx: 1 + r(JITTER.scale),
+      sy: 1 + r(JITTER.scale),
+      dw: r(JITTER.widthDelta),
+    };
+  }
+
+  function transformStrokes(spec, jit) {
+    // Bake the jitter into the coordinates (not a CSS transform) so
+    // stroke widths and dash lengths stay true.
+    const all = spec.strokes.flatMap((s) => s.pts);
+    if (all.length === 0) return [];
+    const xs = all.map((p) => p[0]);
+    const ys = all.map((p) => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const cos = Math.cos(jit.rot);
+    const sin = Math.sin(jit.rot);
+    return spec.strokes.map((s) => ({
+      w: Math.max(20, s.w + jit.dw),
+      closed: s.closed,
+      pts: s.pts.map(([x, y]) => {
+        const ox = (x - cx) * jit.sx;
+        const oy = (y - cy) * jit.sy;
+        return [
+          ox * cos - oy * sin + cx + jit.dx,
+          ox * sin + oy * cos + cy + jit.dy,
+        ];
+      }),
+    }));
+  }
+
+  function polylineLength(pts, closed) {
+    let len = 0;
+    const n = closed ? pts.length : pts.length - 1;
+    for (let i = 0; i < n; i++) {
+      const [x0, y0] = pts[i];
+      const [x1, y1] = pts[(i + 1) % pts.length];
+      len += Math.hypot(x1 - x0, y1 - y0);
+    }
+    return len;
+  }
+
+  function pointAt(pts, closed, dist) {
+    const n = closed ? pts.length : pts.length - 1;
+    let remaining = dist;
+    for (let i = 0; i < n; i++) {
+      const [x0, y0] = pts[i];
+      const [x1, y1] = pts[(i + 1) % pts.length];
+      const seg = Math.hypot(x1 - x0, y1 - y0);
+      if (remaining <= seg && seg > 0) {
+        const t = remaining / seg;
+        return [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t];
+      }
+      remaining -= seg;
+    }
+    return pts[closed ? 0 : pts.length - 1];
+  }
+
+  function makeNode(entry) {
+    const spec = FONT.chars[entry.ch];
+    if (!spec) {
+      // Character outside the glyph set: fall back to a plain span so
+      // typing never silently drops input.
+      const span = document.createElement("span");
+      span.className = "pchar pending";
+      span.textContent = entry.ch;
+      entry.paths = [];
+      return span;
+    }
+
+    const emH = FONT.ascent - FONT.descent;
+    const span = document.createElement("span");
+    span.className = "pchar pending";
+    // Inline-block baseline = bottom edge; the glyph baseline sits
+    // -descent above the viewBox bottom, so drop the box by that much.
+    span.style.verticalAlign = `${FONT.descent / FONT.upm}em`;
+
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${spec.advance} ${emH}`);
+    svg.style.width = `${spec.advance / FONT.upm}em`;
+    svg.style.height = `${emH / FONT.upm}em`;
+
+    const strokes = transformStrokes(spec, jitterParams());
+    entry.paths = strokes.map((s) => {
+      const svgPts = s.pts.map(([x, y]) => [x, FONT.ascent - y]);
+      const d =
+        "M" +
+        svgPts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join("L") +
+        (s.closed ? "Z" : "");
+      const len = polylineLength(svgPts, s.closed);
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "currentColor");
+      path.setAttribute("stroke-width", s.w);
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      // +2 so the dash seam on closed loops doesn't leak a dot.
+      path.setAttribute("stroke-dasharray", len + 2);
+      path.setAttribute("stroke-dashoffset", len + 2);
+      svg.appendChild(path);
+      return { el: path, len, pts: svgPts, closed: s.closed, w: s.w };
+    });
+
+    const pen = document.createElementNS(SVG_NS, "circle");
+    pen.setAttribute("r", 30);
+    pen.setAttribute("fill", "currentColor");
+    pen.setAttribute("opacity", "0");
+    svg.appendChild(pen);
+    entry.pen = pen;
+
+    span.appendChild(svg);
+    return span;
   }
 
   function render() {
@@ -148,30 +293,22 @@
     if (charData.length === 0) {
       const ph = document.createElement("span");
       ph.className = "placeholder";
-      ph.textContent = "Printed text will appear here as you type…";
+      ph.textContent = "Written text will appear here as you type…";
       printed.appendChild(ph);
       return;
     }
 
-    function addChar(entry, parent) {
-      const span = document.createElement("span");
-      span.className = "pchar";
-      span.style.fontFamily = entry.family ? `"${entry.family}", sans-serif` : "inherit";
-      // A lone regular space as the sole content of an inline-block gets
-      // collapsed to zero width by whitespace processing before it's ever
-      // measured -- a non-breaking space renders at full width instead.
-      span.textContent = entry.ch === " " ? " " : entry.ch;
-      parent.appendChild(span);
-    }
-
-    // Group into words (excluding newlines) so wrapping stays word-safe --
-    // per-character inline-blocks are otherwise valid break points too.
+    // Group into words (excluding newlines) so wrapping stays word-safe.
     let wordBuffer = [];
+    function nodeFor(entry) {
+      if (!entry.node) entry.node = makeNode(entry);
+      return entry.node;
+    }
     function flushWord() {
       if (wordBuffer.length === 0) return;
       const wordSpan = document.createElement("span");
       wordSpan.className = "word";
-      for (const entry of wordBuffer) addChar(entry, wordSpan);
+      for (const entry of wordBuffer) wordSpan.appendChild(nodeFor(entry));
       printed.appendChild(wordSpan);
       wordBuffer = [];
     }
@@ -182,13 +319,103 @@
         printed.appendChild(document.createElement("br"));
       } else if (entry.ch === " ") {
         flushWord();
-        addChar(entry, printed);
+        const space = document.createElement("span");
+        space.className = "pchar";
+        const spec = FONT.chars[" "];
+        space.style.width = `${(spec ? spec.advance : 320) / FONT.upm}em`;
+        entry.node = space;
+        printed.appendChild(space);
       } else {
         wordBuffer.push(entry);
       }
     }
     flushWord();
   }
+
+  // ---- the writer: one pen, drawing pending characters in text order ----
+
+  let current = null;
+  let gap = 0;
+  let rafId = null;
+  let lastTs = null;
+
+  function ensureWriting() {
+    if (rafId === null) {
+      lastTs = null;
+      rafId = requestAnimationFrame(tick);
+    }
+  }
+
+  function finishEntry(entry) {
+    for (const p of entry.paths) p.el.setAttribute("stroke-dashoffset", 0);
+    if (entry.pen) entry.pen.setAttribute("opacity", "0");
+    entry.state = "done";
+  }
+
+  function tick(ts) {
+    rafId = null;
+    if (lastTs === null) lastTs = ts;
+    const dt = Math.min(0.05, (ts - lastTs) / 1000);
+    lastTs = ts;
+
+    if (current && (current.removed || current.state === "done")) current = null;
+
+    if (!current) {
+      current = charData.find((e) => e.state === "pending") || null;
+      if (!current) return; // idle; ensureWriting() restarts us on input
+      current.state = "writing";
+      current.strokeIdx = 0;
+      current.progress = 0;
+      if (current.paths.length === 0) {
+        // Space, newline (no node of its own), or fallback span:
+        // appears instantly.
+        if (current.node) current.node.classList.remove("pending");
+        finishEntry(current);
+        gap = CHAR_GAP / 2;
+        current = null;
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+      current.node.classList.remove("pending");
+    }
+
+    if (gap > 0) {
+      gap -= dt;
+      rafId = requestAnimationFrame(tick);
+      return;
+    }
+
+    const entry = current;
+    entry.progress += PEN_SPEED * dt;
+    const stroke = entry.paths[entry.strokeIdx];
+
+    if (entry.progress >= stroke.len) {
+      stroke.el.setAttribute("stroke-dashoffset", 0);
+      entry.strokeIdx += 1;
+      entry.progress = 0;
+      if (entry.strokeIdx >= entry.paths.length) {
+        finishEntry(entry);
+        current = null;
+        gap = CHAR_GAP;
+      } else {
+        gap = STROKE_GAP;
+      }
+    } else {
+      stroke.el.setAttribute(
+        "stroke-dashoffset",
+        stroke.len + 2 - entry.progress
+      );
+      const [px, py] = pointAt(stroke.pts, stroke.closed, entry.progress);
+      entry.pen.setAttribute("cx", px);
+      entry.pen.setAttribute("cy", py);
+      entry.pen.setAttribute("r", stroke.w * 0.45);
+      entry.pen.setAttribute("opacity", "0.9");
+    }
+
+    rafId = requestAnimationFrame(tick);
+  }
+
+  // ---- input diffing (unchanged idea: only new characters get stamped) ----
 
   function diffUpdate(newValue) {
     const oldValue = previousValue;
@@ -207,16 +434,26 @@
       newEnd--;
     }
 
-    const prefixData = charData.slice(0, prefix);
-    const suffixData = charData.slice(oldEnd);
+    for (const entry of charData.slice(prefix, oldEnd)) entry.removed = true;
+
     const insertedData = [];
     for (let i = prefix; i < newEnd; i++) {
-      insertedData.push({ ch: newValue[i], family: randomFamily() });
+      insertedData.push({
+        id: nextId++,
+        ch: newValue[i],
+        state: "pending",
+        node: null,
+        paths: [],
+        removed: false,
+      });
     }
 
-    charData = prefixData.concat(insertedData, suffixData);
+    charData = charData
+      .slice(0, prefix)
+      .concat(insertedData, charData.slice(oldEnd));
     previousValue = newValue;
     render();
+    ensureWriting();
   }
 
   input.addEventListener("input", () => diffUpdate(input.value));
@@ -227,40 +464,26 @@
     diffUpdate("");
   });
 
-  async function loadFonts() {
+  async function loadStrokes() {
     // scripts/make_demo.py emits a standalone copy of this file with the
-    // variant TTFs inlined as data: URIs on window.APERTURE_VARIANTS --
-    // that copy works from file:// where fetch() is blocked.
-    let urls;
-    if (window.APERTURE_VARIANTS) {
-      urls = window.APERTURE_VARIANTS;
-    } else {
-      const res = await fetch(`${FONT_DIR}/manifest.json`);
-      const manifest = await res.json();
-      urls = Array.from(
-        { length: manifest.count },
-        (_, i) => `${FONT_DIR}/variant-${i}.ttf`
-      );
+    // stroke data inlined on window.APERTURE_STROKES -- that copy works
+    // from file:// where fetch() is blocked.
+    if (window.APERTURE_STROKES) {
+      FONT = window.APERTURE_STROKES;
+      return;
     }
-    const faces = urls.map((url, i) => {
-      const family = `AJ-${i}`;
-      const face = new FontFace(family, `url(${url})`);
-      return face.load().then((loaded) => {
-        document.fonts.add(loaded);
-        fontFamilies.push(family);
-      });
-    });
-    await Promise.all(faces);
+    const res = await fetch(STROKES_URL);
+    FONT = await res.json();
   }
 
-  loadFonts()
+  loadStrokes()
     .then(() => {
       input.disabled = false;
       input.placeholder = "Start typing…";
       input.focus();
     })
     .catch((err) => {
-      input.placeholder = "Failed to load font variants -- see console.";
+      input.placeholder = "Failed to load stroke data -- see console.";
       console.error(err);
     });
 })();
