@@ -109,7 +109,9 @@ def _bracket_foot_h(x0, cy, rightward, sw, fw, r, overlap, guideline_shift):
     # wraparound -- for rightward=False (foot_angle=0) using 270 literally
     # would sweep the long way (270 degrees) instead of the short quarter
     # turn, so it's expressed as -90 (0's short path) in that case.
-    top_fillet = arc_pts(stem_x, cy + fw, r, foot_angle, 270 if rightward else -90, n=16)
+    top_fillet = arc_pts(
+        stem_x, cy + fw, r, foot_angle, 270 if rightward else -90, n=16
+    )
     bottom_fillet = arc_pts(stem_x, cy - fw, r, 90, foot_angle, n=16)
     boundary = (
         [(x0, cy - fw), (x0, cy + fw)]
@@ -153,7 +155,12 @@ def _diagonal_flare(px, py, ux, uy, fw, depth, push):
         t = 2 * math.pi * i / n
         local_x = fw * math.cos(t)
         local_y = depth * math.sin(t)
-        pts.append((cx + local_x * perp[0] + local_y * ux, cy + local_x * perp[1] + local_y * uy))
+        pts.append(
+            (
+                cx + local_x * perp[0] + local_y * ux,
+                cy + local_x * perp[1] + local_y * uy,
+            )
+        )
     return Polygon(pts)
 
 
@@ -173,7 +180,9 @@ def serif_foot(point, toward):
 
     if from_vertical <= AXIS_TOLERANCE_DEG:
         up = dy > 0
-        return _bracket_foot(px, py, up, BRACKET_SW, BRACKET_FOOT_W, BRACKET_FILLET_R, BRACKET_OVERLAP)
+        return _bracket_foot(
+            px, py, up, BRACKET_SW, BRACKET_FOOT_W, BRACKET_FILLET_R, BRACKET_OVERLAP
+        )
     if from_horizontal <= AXIS_TOLERANCE_DEG:
         rightward = dx > 0
         # Stroke goes down from here (dy < 0) => this terminal sits on a
@@ -181,6 +190,13 @@ def serif_foot(point, toward):
         # above it; stroke goes up => a BOTTOM guideline, shift up.
         shift = (BRACKET_FOOT_W - 15) * (-1 if dy < 0 else 1)
         return _bracket_foot_h(
-            px, py, rightward, BRACKET_SW, BRACKET_FOOT_W, BRACKET_FILLET_R, BRACKET_OVERLAP, shift
+            px,
+            py,
+            rightward,
+            BRACKET_SW,
+            BRACKET_FOOT_W,
+            BRACKET_FILLET_R,
+            BRACKET_OVERLAP,
+            shift,
         )
     return _diagonal_flare(px, py, ux, uy, DIAG_FOOT_W, DIAG_DEPTH, DIAG_PUSH)

@@ -168,7 +168,10 @@ def _arch(x0, x1, y_top, y_bottom, stem0_top=None, stem1_bottom=None):
     return [
         _chain([(x0, y_bottom), (x0, stem0_top if stem0_top is not None else bowl_cy)]),
         _chain(
-            [(x1, stem1_bottom if stem1_bottom is not None else y_bottom), (x1, bowl_cy)]
+            [
+                (x1, stem1_bottom if stem1_bottom is not None else y_bottom),
+                (x1, bowl_cy),
+            ]
         ),
         _bowl((x0 + x1) / 2, bowl_cy, r, 0, 180),
     ]
