@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Typewriter jitter demo</title>
+<style>
+  :root {
+    --paper: #f3efe6;
+    --ink: #262220;
+    --rule: #d9d1c1;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--paper);
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6vh 5vw;
+    box-sizing: border-box;
+    font-family: system-ui, sans-serif;
+  }
+
+  h1 {
+    font-family: system-ui, sans-serif;
+    font-size: 1rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7a7266;
+    margin: 0 0 2rem;
+  }
+
+  .panel {
+    max-width: 900px;
+    width: 100%;
+  }
+
+  textarea#input {
+    width: 100%;
+    box-sizing: border-box;
+    font: 1.1rem/1.5 ui-monospace, monospace;
+    padding: 1rem 1.2rem;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: #fffdf8;
+    color: var(--ink);
+    resize: vertical;
+    min-height: 6rem;
+  }
+
+  textarea#input:disabled {
+    color: #999;
+  }
+
+  .hint {
+    font-size: 0.8rem;
+    color: #9a9284;
+    margin: 0.5rem 0 2rem;
+  }
+
+  .sheet {
+    background: #fffdf8;
+    border: 1px solid var(--rule);
+    box-shadow: 0 2px 24px rgba(0, 0, 0, 0.08);
+    padding: 6vh 6vw;
+    min-height: 10rem;
+    box-sizing: border-box;
+  }
+
+  .printed {
+    font-size: clamp(1.6rem, 4vw, 2.6rem);
+    line-height: 1.6;
+  }
+
+  .pchar {
+    display: inline-block;
+  }
+
+  .word {
+    white-space: nowrap;
+  }
+
+  .placeholder {
+    font-family: system-ui, sans-serif;
+    font-size: 1rem;
+    color: #b5ac9c;
+  }
+
+  .controls {
+    margin-top: 1.5rem;
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    font-size: 0.9rem;
+  }
+
+  button {
+    font: inherit;
+    padding: 0.5rem 1.1rem;
+    border-radius: 999px;
+    border: 1px solid var(--rule);
+    background: #fffdf8;
+    cursor: pointer;
+  }
+
+  button:hover {
+    background: var(--rule);
+  }
+</style>
+</head>
+<body>
+  <h1>Aperture Sans &mdash; typewriter jitter</h1>
+  <div class="panel">
+    <textarea id="input" rows="3" disabled placeholder="Loading font variants&hellip;"></textarea>
+    <p class="hint">Type above. Each character is stamped below with a randomly-picked jittered variant of the font &mdash; once printed, it stays put.</p>
+    <div class="sheet">
+      <div class="printed" id="printed"><span class="placeholder">Printed text will appear here as you type&hellip;</span></div>
+    </div>
+    <div class="controls">
+      <button id="clear">Clear</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const input = document.getElementById("input");
+  const printed = document.getElementById("printed");
+  const clearBtn = document.getElementById("clear");
+
+  const FONT_DIR = "../out/jitter";
+  let fontFamilies = [];
+
+  // charData[i] = { ch, family } -- assigned once when a character is
+  // first typed, then never reassigned, so printed text is static; only
+  // brand-new characters (from a diff against the previous value) get a
+  // fresh random pick.
+  let charData = [];
+  let previousValue = "";
+
+  function randomFamily() {
+    return fontFamilies[(Math.random() * fontFamilies.length) | 0];
+  }
+
+  function render() {
+    printed.innerHTML = "";
+    if (charData.length === 0) {
+      const ph = document.createElement("span");
+      ph.className = "placeholder";
+      ph.textContent = "Printed text will appear here as you type…";
+      printed.appendChild(ph);
+      return;
+    }
+
+    function addChar(entry, parent) {
+      const span = document.createElement("span");
+      span.className = "pchar";
+      span.style.fontFamily = entry.family ? `"${entry.family}", sans-serif` : "inherit";
+      // A lone regular space as the sole content of an inline-block gets
+      // collapsed to zero width by whitespace processing before it's ever
+      // measured -- a non-breaking space renders at full width instead.
+      span.textContent = entry.ch === " " ? " " : entry.ch;
+      parent.appendChild(span);
+    }
+
+    // Group into words (excluding newlines) so wrapping stays word-safe --
+    // per-character inline-blocks are otherwise valid break points too.
+    let wordBuffer = [];
+    function flushWord() {
+      if (wordBuffer.length === 0) return;
+      const wordSpan = document.createElement("span");
+      wordSpan.className = "word";
+      for (const entry of wordBuffer) addChar(entry, wordSpan);
+      printed.appendChild(wordSpan);
+      wordBuffer = [];
+    }
+
+    for (const entry of charData) {
+      if (entry.ch === "\n") {
+        flushWord();
+        printed.appendChild(document.createElement("br"));
+      } else if (entry.ch === " ") {
+        flushWord();
+        addChar(entry, printed);
+      } else {
+        wordBuffer.push(entry);
+      }
+    }
+    flushWord();
+  }
+
+  function diffUpdate(newValue) {
+    const oldValue = previousValue;
+    let prefix = 0;
+    const maxPrefix = Math.min(oldValue.length, newValue.length);
+    while (prefix < maxPrefix && oldValue[prefix] === newValue[prefix]) prefix++;
+
+    let oldEnd = oldValue.length;
+    let newEnd = newValue.length;
+    while (
+      oldEnd > prefix &&
+      newEnd > prefix &&
+      oldValue[oldEnd - 1] === newValue[newEnd - 1]
+    ) {
+      oldEnd--;
+      newEnd--;
+    }
+
+    const prefixData = charData.slice(0, prefix);
+    const suffixData = charData.slice(oldEnd);
+    const insertedData = [];
+    for (let i = prefix; i < newEnd; i++) {
+      insertedData.push({ ch: newValue[i], family: randomFamily() });
+    }
+
+    charData = prefixData.concat(insertedData, suffixData);
+    previousValue = newValue;
+    render();
+  }
+
+  input.addEventListener("input", () => diffUpdate(input.value));
+
+  clearBtn.addEventListener("click", () => {
+    input.value = "";
+    input.focus();
+    diffUpdate("");
+  });
+
+  async function loadFonts() {
+    const res = await fetch(`${FONT_DIR}/manifest.json`);
+    const manifest = await res.json();
+    const faces = [];
+    for (let i = 0; i < manifest.count; i++) {
+      const family = `AJ-${i}`;
+      const face = new FontFace(family, `url(${FONT_DIR}/variant-${i}.ttf)`);
+      faces.push(face.load().then((loaded) => {
+        document.fonts.add(loaded);
+        fontFamilies.push(family);
+      }));
+    }
+    await Promise.all(faces);
+  }
+
+  loadFonts()
+    .then(() => {
+      input.disabled = false;
+      input.placeholder = "Start typing…";
+      input.focus();
+    })
+    .catch((err) => {
+      input.placeholder = "Failed to load font variants -- see console.";
+      console.error(err);
+    });
+})();
+</script>
+</body>
+</html>
