@@ -228,17 +228,28 @@
   });
 
   async function loadFonts() {
-    const res = await fetch(`${FONT_DIR}/manifest.json`);
-    const manifest = await res.json();
-    const faces = [];
-    for (let i = 0; i < manifest.count; i++) {
+    // scripts/make_demo.py emits a standalone copy of this file with the
+    // variant TTFs inlined as data: URIs on window.APERTURE_VARIANTS --
+    // that copy works from file:// where fetch() is blocked.
+    let urls;
+    if (window.APERTURE_VARIANTS) {
+      urls = window.APERTURE_VARIANTS;
+    } else {
+      const res = await fetch(`${FONT_DIR}/manifest.json`);
+      const manifest = await res.json();
+      urls = Array.from(
+        { length: manifest.count },
+        (_, i) => `${FONT_DIR}/variant-${i}.ttf`
+      );
+    }
+    const faces = urls.map((url, i) => {
       const family = `AJ-${i}`;
-      const face = new FontFace(family, `url(${FONT_DIR}/variant-${i}.ttf)`);
-      faces.push(face.load().then((loaded) => {
+      const face = new FontFace(family, `url(${url})`);
+      return face.load().then((loaded) => {
         document.fonts.add(loaded);
         fontFamilies.push(family);
-      }));
-    }
+      });
+    });
     await Promise.all(faces);
   }
 
