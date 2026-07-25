@@ -118,6 +118,15 @@
   button:hover {
     background: var(--rule);
   }
+
+  select {
+    font: inherit;
+    padding: 0.35rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--rule);
+    background: #fffdf8;
+    margin-left: 0.4rem;
+  }
 </style>
 </head>
 <body>
@@ -130,6 +139,9 @@
     </div>
     <div class="controls">
       <button id="clear">Clear</button>
+      <label>Face
+        <select id="face"></select>
+      </label>
     </div>
   </div>
 
@@ -138,6 +150,7 @@
   const input = document.getElementById("input");
   const printed = document.getElementById("printed");
   const clearBtn = document.getElementById("clear");
+  const faceSelect = document.getElementById("face");
 
   const SVG_NS = "http://www.w3.org/2000/svg";
   const STROKES_URL = "../out/strokes.json";
@@ -169,7 +182,15 @@
     widthDelta: 7,
   };
 
-  let FONT = null; // {upm, ascent, descent, chars}
+  let FONT = null; // {upm, ascent, descent, faces: {key: {label, chars}}}
+  // Characters remember the face they were stamped with, so switching
+  // faces only affects what's typed from then on -- like swapping the
+  // typebars mid-page.
+  let currentFace = null;
+
+  function charSpec(entry) {
+    return FONT.faces[entry.face].chars[entry.ch];
+  }
 
   // charData[i] = one typed character with its own DOM node and writing
   // state ("pending" -> "writing" -> "done"). Nodes are created once and
@@ -243,7 +264,7 @@
   }
 
   function makeNode(entry) {
-    const spec = FONT.chars[entry.ch];
+    const spec = charSpec(entry);
     if (!spec) {
       // Character outside the glyph set: fall back to a plain span so
       // typing never silently drops input.
@@ -336,7 +357,7 @@
         flushWord();
         const space = document.createElement("span");
         space.className = "pchar";
-        const spec = FONT.chars[" "];
+        const spec = charSpec(entry);
         space.style.width = `${(spec ? spec.advance : 320) / FONT.upm}em`;
         entry.node = space;
         printed.appendChild(space);
@@ -492,6 +513,7 @@
       insertedData.push({
         id: nextId++,
         ch: newValue[i],
+        face: currentFace,
         state: "pending",
         node: null,
         paths: [],
@@ -527,8 +549,20 @@
     FONT = await res.json();
   }
 
+  faceSelect.addEventListener("change", () => {
+    currentFace = faceSelect.value;
+    input.focus();
+  });
+
   loadStrokes()
     .then(() => {
+      for (const [key, face] of Object.entries(FONT.faces)) {
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = face.label;
+        faceSelect.appendChild(opt);
+      }
+      currentFace = faceSelect.value;
       input.disabled = false;
       input.placeholder = "Start typing…";
       input.focus();

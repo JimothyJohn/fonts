@@ -73,7 +73,17 @@ def test_strokes_by_char_covers_cmap_and_is_deterministic():
     a = strokes_by_char()
     b = strokes_by_char()
     assert a == b
-    for codepoint in CMAP:
-        assert chr(codepoint) in a["chars"]
-    assert a["chars"][" "]["strokes"] == []
+    assert set(a["faces"]) == {"sans", "script"}
+    for face in a["faces"].values():
+        for codepoint in CMAP:
+            assert chr(codepoint) in face["chars"]
+        assert face["chars"][" "]["strokes"] == []
     assert a["upm"] == 1000
+
+
+def test_script_face_differs_from_sans():
+    faces = strokes_by_char()["faces"]
+    # l: script adds an ascender loop and an exit tail
+    assert len(faces["script"]["chars"]["l"]["strokes"]) > len(
+        faces["sans"]["chars"]["l"]["strokes"]
+    )
