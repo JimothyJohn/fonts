@@ -57,15 +57,50 @@ def test_slant_applied_to_stem():
     assert top[0] - bottom[0] == pytest.approx(SLANT * (top[1] - bottom[1]))
 
 
-def test_uppercase_gets_no_tail():
-    """Caps are slanted but unjoined: the shear-corrected centerlines
-    must match the sans centerlines exactly."""
+def test_uppercase_gets_no_tail_or_loops():
+    """Caps are slanted and bowed but unjoined: same stroke count as the
+    sans, and every stroke's endpoints (shear removed) are unmoved --
+    only interior points may bow."""
     with record_strokes() as sans_strokes:
         SKELETONS["H"]()
-    sans_right = max(x for s in sans_strokes for x, _ in s["pts"])
     strokes = script_strokes("H", SKELETONS["H"])
-    script_right = max(x - SLANT * y for s in strokes for x, y in s["pts"])
-    assert script_right == pytest.approx(sans_right)
+    assert len(strokes) == len(sans_strokes)
+    for sans, script in zip(sans_strokes, strokes):
+        for p_sans, p_script in [
+            (sans["pts"][0], script["pts"][0]),
+            (sans["pts"][-1], script["pts"][-1]),
+        ]:
+            unsheared = (p_script[0] - SLANT * p_script[1], p_script[1])
+            assert unsheared == pytest.approx(p_sans)
+
+
+def test_long_straight_strokes_are_bowed():
+    """l's stem must no longer be a ruler line: resampled with interior
+    points that deviate from the endpoint chord."""
+    strokes = script_strokes("l", SKELETONS["l"])
+    stem = strokes[0]["pts"]
+    assert len(stem) > 2
+    (x0, y0), (x1, y1) = stem[0], stem[-1]
+    mid = stem[len(stem) // 2]
+    chord_x = x0 + (x1 - x0) * ((mid[1] - y0) / (y1 - y0))
+    assert abs(mid[0] - chord_x) > 5
+
+
+@pytest.mark.parametrize("name", sorted("bdfhkl"))
+def test_ascender_loops_added(name):
+    with record_strokes() as sans_strokes:
+        SKELETONS[name]()
+    strokes = script_strokes(name, SKELETONS[name])
+    # skeleton + loop + exit tail
+    assert len(strokes) == len(sans_strokes) + 2
+
+
+@pytest.mark.parametrize("name", ["p", "q"])
+def test_descender_loops_added(name):
+    with record_strokes() as sans_strokes:
+        SKELETONS[name]()
+    strokes = script_strokes(name, SKELETONS[name])
+    assert len(strokes) == len(sans_strokes) + 2
 
 
 def test_script_deterministic():

@@ -20,7 +20,9 @@ machinery the other fonts use, so joins and T-junctions stay seamless.
 
 import math
 import string
+import zlib
 
+from fontgen.metrics import X_HEIGHT
 from fontgen.primitives import Point, finalize, record_strokes, stroke_union
 
 SLANT_DEG = 12
@@ -29,16 +31,35 @@ SLANT = math.tan(math.radians(SLANT_DEG))
 # Cursive joins happen low, around a third of the x-height: the exit
 # tail ends at JOIN_Y, REACH to the right of the glyph's ink edge.
 JOIN_Y = 160
-REACH = 155
+REACH = 170
 
-# Exit tails are drawn a touch lighter than the main strokes, which
-# reads as the pen easing off pressure as it leaves the letter.
+# Exit tails and loop up-strokes are drawn a touch lighter than the
+# main strokes, which reads as the pen easing off pressure.
 TAIL_WIDTH_RATIO = 0.8
+LOOP_WIDTH_RATIO = 0.85
 
 # Where the pen may plausibly leave a letter: endpoints (or, for
 # letters that end on a closed bowl, any point) in this y-band qualify
 # as the tail's start.
 EXIT_ZONE_Y = (-30, 290)
+
+# Cursive loops. Ascenders (a full-height 2-pt vertical stem) get an
+# up-stroke that bows LOOP_W out to the right and rejoins the stem at
+# its apex, closing the loop where it leaves the stem near x-height --
+# the classic looped l. Descenders on p/q get the mirrored loop below
+# the baseline; q loops right instead of left, per cursive convention.
+ASC_LOOP_LETTERS = set("bdfhkl")
+DESC_LOOP_SIDE = {"p": -1, "q": 1}
+LOOP_W = 105
+ASC_CROSS_Y = X_HEIGHT * 0.58
+ASC_MIN_TOP = 660
+DESC_MAX_BOTTOM = -150
+
+# Naturalness: any long ruler-straight segment gets a subtle bow --
+# resampled with a one-hump perpendicular sine displacement, direction
+# chosen deterministically per (glyph, stroke) so builds are stable.
+BOW_MAX = 13
+BOW_MIN_LEN = 150
 
 LOWERCASE = set(string.ascii_lowercase)
 
@@ -97,10 +118,75 @@ def _exit_tail(strokes: list[dict]) -> dict | None:
     span = end[0] - start[0]
     if span <= 0:
         return None
-    c1 = (start[0] + span * 0.3, start[1] * 0.3)
-    c2 = (end[0] - span * 0.3, JOIN_Y * 0.55)
+    # Sag close to the baseline before hooking up late -- a rounder,
+    # more pen-like swash than an even S-curve.
+    c1 = (start[0] + span * 0.22, start[1] * 0.12)
+    c2 = (end[0] - span * 0.30, JOIN_Y * 0.18)
     width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
     return {"pts": _cubic(start, c1, c2, end), "width": width, "closed": False}
+
+
+def _vertical_stem(s: dict) -> bool:
+    return (
+        not s["closed"]
+        and len(s["pts"]) == 2
+        and abs(s["pts"][0][0] - s["pts"][1][0]) < 1
+    )
+
+
+def _loop_stroke(sx: float, base: Point, tip_y: float, side: int, width: float) -> dict:
+    """An up-stroke from `base` on the stem that bows `side * LOOP_W` out
+    and rejoins the stem at (sx, tip_y), enclosing a loop between itself
+    and the stem."""
+    rise = tip_y - base[1]
+    c1 = (sx + side * LOOP_W * 1.15, base[1] + rise * 0.3)
+    c2 = (sx + side * LOOP_W * 0.55, tip_y - rise * 0.05)
+    return {
+        "pts": _cubic(base, c1, c2, (sx, tip_y)),
+        "width": width * LOOP_WIDTH_RATIO,
+        "closed": False,
+    }
+
+
+def _add_loops(name: str, strokes: list[dict]) -> list[dict]:
+    out = list(strokes)
+    for s in strokes:
+        if not _vertical_stem(s):
+            continue
+        sx = s["pts"][0][0]
+        ys = (s["pts"][0][1], s["pts"][1][1])
+        if name in ASC_LOOP_LETTERS and max(ys) >= ASC_MIN_TOP:
+            out.append(_loop_stroke(sx, (sx, ASC_CROSS_Y), max(ys), 1, s["width"]))
+        if name in DESC_LOOP_SIDE and min(ys) <= DESC_MAX_BOTTOM:
+            side = DESC_LOOP_SIDE[name]
+            out.append(_loop_stroke(sx, (sx, -5), min(ys), side, s["width"]))
+    return out
+
+
+def _bow(name: str, index: int, s: dict) -> dict:
+    """Replace a long straight 2-pt stroke with a gently curved sample of
+    itself: same endpoints, a one-hump sine bow perpendicular to the
+    segment. Kills the ruler-drawn look without touching the metrics."""
+    if s["closed"] or len(s["pts"]) != 2:
+        return s
+    (x0, y0), (x1, y1) = s["pts"]
+    length = math.hypot(x1 - x0, y1 - y0)
+    if length < BOW_MIN_LEN:
+        return s
+    sign = 1 if zlib.crc32(f"{name}:{index}".encode()) & 1 else -1
+    amp = sign * min(BOW_MAX, length * 0.04)
+    nx, ny = -(y1 - y0) / length, (x1 - x0) / length
+    n = 12
+    pts = []
+    for i in range(n + 1):
+        t = i / n
+        w = math.sin(math.pi * t) * amp
+        pts.append((x0 + (x1 - x0) * t + nx * w, y0 + (y1 - y0) * t + ny * w))
+    return {**s, "pts": pts}
+
+
+def _naturalize(name: str, strokes: list[dict]) -> list[dict]:
+    return [_bow(name, i, s) for i, s in enumerate(strokes)]
 
 
 def _slant(strokes: list[dict]) -> list[dict]:
@@ -109,15 +195,20 @@ def _slant(strokes: list[dict]) -> list[dict]:
 
 def script_strokes(name: str, fn) -> list[dict]:
     """The script variant's pen strokes for one glyph: recorded skeleton,
-    plus exit tail for lowercase, then slanted.
+    plus cursive loops and exit tail for lowercase and a soft bow on
+    every long straight stroke, then slanted.
     """
     with record_strokes() as strokes:
         fn()
     if name in LOWERCASE:
+        strokes = _add_loops(name, strokes)
+        # Tail before bowing: the exit point must come from the authored
+        # geometry -- a bowed stem gains interior points that would
+        # otherwise masquerade as exit candidates (j grew a bogus tail).
         tail = _exit_tail(strokes)
         if tail is not None:
             strokes = strokes + [tail]
-    return _slant(strokes)
+    return _slant(_naturalize(name, strokes))
 
 
 def _build(name: str, fn):
