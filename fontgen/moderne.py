@@ -36,16 +36,35 @@ were authored against, curved strokes are pre-stretched vertically about
 their own center so their outer edge still reaches the overshoot line
 the original round cap reached; without this, O renders 26 units
 shorter than H and every arch sits visibly low.
+
+On top of the drafted letterforms sits a deterministic humanizing layer
+-- the difference between a didone ruled on a drafting table and one
+lettered by a steady hand. Every random choice is seeded from the glyph
+and stroke name (zlib.crc32, as in the script face's bows), so builds
+are reproducible: long straight segments bow a few units off true,
+stroke width breathes a few percent along the path and leans heavier
+toward the bottom (pen pressure), each glyph carries its own hairsbreadth
+of lean and weight, serif slabs and balls vary slightly in size, and a
+final morphological open/close pass melts every razor corner the way ink
+soaks into paper.
 """
 
 import itertools
 import math
+import zlib
 
+from shapely import affinity
 from shapely import geometry as sg
 from shapely.ops import unary_union
 
 from fontgen.metrics import STROKE
-from fontgen.primitives import Point, finalize, record_strokes
+from fontgen.primitives import (
+    Point,
+    arc_pts,
+    polygon_to_contours,
+    record_strokes,
+    union_all,
+)
 
 # The weight axis: full stems vs hairlines, and the easing power between
 # them (higher power holds strokes thin longer, snapping to thick only
@@ -88,9 +107,13 @@ CHAIN_MIN_WIDTH = {
 # didone slab floating on a curve's end just reads as debris.
 SERIF_SKIP = {"six", "nine"}
 
+# Bare stroke tops that end mid-air (t's stem, !'s taper point) read as
+# lollipops with a slab floating on them; these keep only their feet.
+TOP_SERIF_SKIP = {"t", "exclam"}
+
 # Glyphs whose free curve ends get a ball even where the stroke is
-# still thick (didone r and j traditionally end in a full ball).
-BALL_FORCE = {"r", "j", "J"}
+# still thick (didone r, j and f's flag traditionally end in a full ball).
+BALL_FORCE = {"r", "j", "J", "f"}
 
 # A straight segment counts as a demotable diagonal when its angle from
 # horizontal falls in this band (outside it, it's an arm or a stem).
@@ -121,6 +144,36 @@ AXIS_TOL_DEG = 8.0
 # Anything this short is a dot (i/j dots, period, colon), rendered as a
 # plain disc -- the angle model would flatten it into a hairline sliver.
 DOT_MAX_LEN = 12.0
+
+# ---- humanizing ------------------------------------------------------------
+# All variation is seeded from glyph/stroke names, so builds stay
+# byte-identical run to run.
+
+# Each glyph's overall weight drifts this fraction from nominal.
+GLYPH_WEIGHT_VAR = 0.03
+# Stroke width breathes this fraction along the path (one slow wave)...
+BREATH_AMP = 0.05
+# ...and leans this much heavier at the bottom of the stroke than the
+# top -- the way pen pressure settles as a hand pulls downward.
+TAPER_AMP = 0.045
+# Long straight segments bow off true by this many units (range), with
+# seeded direction, killing the ruler-drawn look without moving endpoints.
+BOW_AMP = (4.0, 9.0)
+BOW_MIN_LEN = 140.0
+BOW_SUBDIV = 8
+# Whole-glyph lean: a hairsbreadth of shear either way.
+SLANT_VAR = 0.012
+# Serif slabs and terminal balls each vary about this much in size.
+SERIF_VAR = 0.1
+BALL_VAR = 0.08
+# Radius of the final open/close pass that rounds every sharp corner --
+# the "ink on paper" softening.
+SOFTEN_R = 5.0
+
+
+def _rand(key: str, lo: float, hi: float) -> float:
+    """Deterministic uniform value in [lo, hi] from a string key."""
+    return lo + (hi - lo) * (zlib.crc32(key.encode()) / 0xFFFFFFFF)
 
 
 def _fold_angle(dx: float, dy: float) -> float:
@@ -240,9 +293,60 @@ def _y_stretch(pts: list[Point], closed: bool) -> list[Point]:
     return [(x, cy + (y - cy) * factor) for x, y in pts]
 
 
-def _prepare(name: str, stroke: dict):
+def _humanize(name: str, si: int, pts: list[Point], widths: list[float], closed: bool):
+    """Give a drafted stroke a hand: bow long straight segments a few
+    units off true (subdividing them so the bow can curve), let the
+    width breathe gently along the path, and lean the weight toward the
+    bottom of the stroke. Endpoints never move, so joins, serifs and
+    ball placement stay exact."""
+    ys = [y for _, y in pts]
+    y_min, y_span = min(ys), max(max(ys) - min(ys), 1.0)
+    segs = list(itertools.pairwise(pts))
+    if closed:
+        segs.append((pts[-1], pts[0]))
+    total = max(sum(math.dist(a, b) for a, b in segs), 1.0)
+    phase = _rand(f"{name}:{si}:phase", 0.0, 1.0)
+    freq = _rand(f"{name}:{si}:freq", 0.7, 1.5)
+    straight = not closed and len(pts) <= STRAIGHT_MAX_PTS
+
+    def flow(w: float, y_mid: float, t: float) -> float:
+        breath = 1 + BREATH_AMP * math.sin(math.tau * (freq * t + phase))
+        taper = 1 + TAPER_AMP * (1 - 2 * (y_mid - y_min) / y_span)
+        return w * breath * taper
+
+    out_pts, out_w = [pts[0]], []
+    walked = 0.0
+    for k, ((x0, y0), (x1, y1)) in enumerate(segs):
+        seg_len = math.dist((x0, y0), (x1, y1))
+        w = widths[k]
+        if straight and seg_len > BOW_MIN_LEN:
+            sign = 1 if zlib.crc32(f"{name}:{si}:{k}".encode()) & 1 else -1
+            amp = sign * _rand(f"{name}:{si}:{k}:amp", *BOW_AMP)
+            nx, ny = -(y1 - y0) / seg_len, (x1 - x0) / seg_len
+            prev = 0.0
+            for j in range(1, BOW_SUBDIV + 1):
+                t = j / BOW_SUBDIV
+                bow = math.sin(math.pi * t) * amp
+                out_pts.append(
+                    (x0 + (x1 - x0) * t + nx * bow, y0 + (y1 - y0) * t + ny * bow)
+                )
+                mid = (prev + t) / 2
+                y_mid = y0 + (y1 - y0) * mid
+                out_w.append(flow(w, y_mid, (walked + seg_len * mid) / total))
+                prev = t
+        else:
+            # The wrap segment of a closed stroke ends back at pts[0],
+            # which is already in the list.
+            if not (closed and k == len(segs) - 1):
+                out_pts.append((x1, y1))
+            out_w.append(flow(w, (y0 + y1) / 2, (walked + seg_len / 2) / total))
+        walked += seg_len
+    return out_pts, out_w
+
+
+def _prepare(name: str, si: int, stroke: dict):
     """One recorded stroke -> ("dot", disc) or ("stroke", (shape, pts,
-    widths)) after dedup, stretch, and width assignment."""
+    widths)) after dedup, stretch, width assignment, and humanizing."""
     pts = [tuple(p) for p in stroke["pts"]]
     closed = stroke["closed"]
     if closed and len(pts) > 1 and math.dist(pts[0], pts[-1]) < 1e-6:
@@ -250,19 +354,30 @@ def _prepare(name: str, stroke: dict):
     if len(pts) < 2 or _path_length(pts) < DOT_MAX_LEN:
         r = stroke["width"] / 2
         return "dot", sg.Point(pts[0]).buffer(r, quad_segs=16)
-    if len(pts) >= CURVE_MIN_PTS:
+    # Decided before humanizing: a bowed stem gains points but must not
+    # start reading as a curve (balls belong on true curve ends only).
+    is_curve = len(pts) >= CURVE_MIN_PTS
+    if is_curve:
         pts = _y_stretch(pts, closed)
     scale = min(max(stroke["width"] / STROKE, 0.6), 1.5)
+    scale *= 1 + _rand(f"{name}:weight", -GLYPH_WEIGHT_VAR, GLYPH_WEIGHT_VAR)
     widths = _seg_widths(name, pts, closed, scale)
-    return "stroke", (_varwidth_shape(pts, widths, closed), pts, widths, closed)
+    pts, widths = _humanize(name, si, pts, widths, closed)
+    return "stroke", (
+        _varwidth_shape(pts, widths, closed),
+        pts,
+        widths,
+        closed,
+        is_curve,
+    )
 
 
 def _ball_shapes(name, prepared, ink, terminals):
     """Didone ball terminals on free-hanging thin stroke ends."""
     term_pts = [p for p, _ in terminals]
     centers = []
-    for own_shape, pts, widths, closed in prepared:
-        if closed or len(pts) < CURVE_MIN_PTS:
+    for own_shape, pts, widths, closed, is_curve in prepared:
+        if closed or not is_curve:
             continue
         for end in (0, -1):
             p = pts[end]
@@ -300,26 +415,36 @@ def _ball_shapes(name, prepared, ink, terminals):
                 break
         else:
             merged.append(c)
-    return [sg.Point(c).buffer(BALL_R, quad_segs=16) for c in merged]
+    return [
+        sg.Point(c).buffer(
+            BALL_R * (1 + _rand(f"{name}:ball:{i}", -BALL_VAR, BALL_VAR)),
+            quad_segs=16,
+        )
+        for i, c in enumerate(merged)
+    ]
 
 
-def _serif_shapes(terminals):
+def _serif_shapes(name, terminals):
     """Flat unbracketed slabs at every declared terminal: horizontal
     under vertical stems and diagonals (sitting exactly on the line the
-    stroke ends at), small vertical beaks on horizontal arm ends."""
+    stroke ends at), small vertical beaks on horizontal arm ends. Each
+    slab's size drifts a little, like individually drawn feet."""
     shapes = []
-    for (px, py), (tx, ty) in terminals:
+    for i, ((px, py), (tx, ty)) in enumerate(terminals):
         dx, dy = px - tx, py - ty
         angle = _fold_angle(dx, dy)
+        hw = SERIF_HW * (1 + _rand(f"{name}:serif:{i}:hw", -SERIF_VAR, SERIF_VAR))
+        th = SERIF_T * (1 + _rand(f"{name}:serif:{i}:t", -SERIF_VAR, SERIF_VAR))
         if angle <= AXIS_TOL_DEG:  # horizontal arm -> vertical beak
+            hh = ARM_HH * (1 + _rand(f"{name}:serif:{i}:hh", -SERIF_VAR, SERIF_VAR))
             if dx > 0:
-                shapes.append(sg.box(px - ARM_T, py - ARM_HH, px, py + ARM_HH))
+                shapes.append(sg.box(px - ARM_T, py - hh, px, py + hh))
             else:
-                shapes.append(sg.box(px, py - ARM_HH, px + ARM_T, py + ARM_HH))
+                shapes.append(sg.box(px, py - hh, px + ARM_T, py + hh))
         elif dy < 0:  # stem or diagonal ending downward -> foot slab
-            shapes.append(sg.box(px - SERIF_HW, py, px + SERIF_HW, py + SERIF_T))
-        else:  # ending upward -> head slab
-            shapes.append(sg.box(px - SERIF_HW, py - SERIF_T, px + SERIF_HW, py))
+            shapes.append(sg.box(px - hw, py, px + hw, py + th))
+        elif name not in TOP_SERIF_SKIP:  # ending upward -> head slab
+            shapes.append(sg.box(px - hw, py - th, px + hw, py))
     return shapes
 
 
@@ -331,6 +456,25 @@ def _comma_shapes():
     return [ball, _varwidth_shape(tail_pts, [54.0, 24.0], closed=False)]
 
 
+def _f_strokes():
+    """f's recorded hook curls over the apex and dies thin at the LEFT --
+    backwards for a didone, whose f carries a hairline flag off to the
+    right ending in a ball. Redrawn: same stem and crossbar, but the arc
+    runs only from the apex (where the stem's own ink swallows that thin
+    end, so no ball sprouts there) 60 degrees down the right side --
+    stopping while its tangent is still shallow, so the flag stays a
+    hairline and its forced ball hangs in the air above the crossbar
+    instead of drooping into it like a P bowl."""
+    return [
+        {"pts": [(170.0, 0.0), (170.0, 700.0)], "width": STROKE, "closed": False},
+        {"pts": [(80.0, 480.0), (260.0, 480.0)], "width": STROKE, "closed": False},
+        {"pts": arc_pts(170, 560, 140, 30, 90), "width": STROKE, "closed": False},
+    ]
+
+
+STROKE_OVERRIDES = {"f": _f_strokes}
+
+
 def moderne_shapes(name: str, fn) -> tuple[list, float]:
     """All Shapely shapes for one glyph (strokes, dots, balls, serifs)
     plus its advance width."""
@@ -338,24 +482,38 @@ def moderne_shapes(name: str, fn) -> tuple[list, float]:
         _, advance, terminals = fn()
     if name == "comma":
         return _comma_shapes(), advance
+    if name in STROKE_OVERRIDES:
+        strokes = STROKE_OVERRIDES[name]()
     dots, prepared = [], []
-    for s in strokes:
-        kind, payload = _prepare(name, s)
+    for si, s in enumerate(strokes):
+        kind, payload = _prepare(name, si, s)
         if kind == "dot":
             dots.append(payload)
         else:
             prepared.append(payload)
-    stroke_shapes = [shape for shape, _, _, _ in prepared]
+    stroke_shapes = [p[0] for p in prepared]
     ink = unary_union(stroke_shapes + dots) if (stroke_shapes or dots) else sg.Polygon()
     balls = _ball_shapes(name, prepared, ink, terminals)
-    serifs = _serif_shapes(terminals) if name not in SERIF_SKIP else []
+    serifs = _serif_shapes(name, terminals) if name not in SERIF_SKIP else []
     return stroke_shapes + dots + balls + serifs, advance
 
 
 def _build(name: str, fn):
     def build():
         shapes, advance = moderne_shapes(name, fn)
-        return finalize(shapes), advance
+        geom = union_all(shapes)
+        # The last humanizing touches happen on the assembled letter:
+        # a hairsbreadth of per-glyph lean, then an open/close pass that
+        # rounds every sharp corner -- serif edges, miter joints, ball
+        # junctions -- the way ink spreads at a nib's turn.
+        slant = _rand(f"{name}:lean", -SLANT_VAR, SLANT_VAR)
+        geom = affinity.affine_transform(geom, [1, slant, 0, 1, 0, 0])
+        geom = (
+            geom.buffer(SOFTEN_R, quad_segs=4)
+            .buffer(-2 * SOFTEN_R, quad_segs=4)
+            .buffer(SOFTEN_R, quad_segs=4)
+        )
+        return polygon_to_contours(geom), advance
 
     return build
 
