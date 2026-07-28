@@ -30,6 +30,7 @@ The pen paths come from the script face (loops, exit tails, slant), so
 Hand reads as cursive; everything downstream of the path is new.
 """
 
+import itertools
 import math
 import random
 import zlib
@@ -73,7 +74,9 @@ def _rng(name: str, variant: int) -> random.Random:
 def _resample(pts: list[Point], step: float) -> tuple[list[Point], list[float], float]:
     """Even-arclength resampling of a polyline: points, their arclength
     positions, and the total length."""
-    lengths = [math.hypot(x1 - x0, y1 - y0) for (x0, y0), (x1, y1) in zip(pts, pts[1:])]
+    lengths = [
+        math.hypot(x1 - x0, y1 - y0) for (x0, y0), (x1, y1) in itertools.pairwise(pts)
+    ]
     total = sum(lengths)
     if total == 0:
         return [pts[0]], [0.0], 0.0
