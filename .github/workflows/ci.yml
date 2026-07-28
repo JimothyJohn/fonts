@@ -22,7 +22,7 @@ jobs:
           uvx ruff@0.16.0 format --check .
       - name: Test
         run: uv run pytest
-      - name: Build all six fonts
+      - name: Build all seven fonts
         run: |
           uv run python scripts/make_font.py
           uv run python scripts/make_font_serif.py
@@ -30,3 +30,4 @@ jobs:
           uv run python scripts/make_font_hand.py
           uv run python scripts/make_font_moderne.py
           uv run python scripts/make_font_blackletter.py
+          uv run python scripts/make_font_marquee.py
