@@ -24,4 +24,4 @@ def _serif(fn):
 
 GLYPHS = {name: _serif(fn) for name, fn in SKELETONS.items()}
 
-__all__ = ["GLYPHS", "CMAP"]
+__all__ = ["CMAP", "GLYPHS"]

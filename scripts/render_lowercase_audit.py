@@ -10,8 +10,8 @@ from PIL import Image, ImageDraw
 from fontgen.glyphs import GLYPHS, SKELETONS
 from fontgen.hand import _rng, hand_contours
 from fontgen.metrics import ASCENT, DESCENT
-from fontgen.script import make_glyphs, script_strokes
 from fontgen.primitives import signed_area
+from fontgen.script import make_glyphs, script_strokes
 
 CELL = 260
 SCALE = 0.22
