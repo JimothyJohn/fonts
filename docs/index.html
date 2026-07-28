@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aperture — six faces, one skeleton</title>
+<style>
+  @font-face { font-family: "Aperture Sans";    src: url("fonts/aperture-sans.ttf")    format("truetype"); }
+  @font-face { font-family: "Aperture Serif";   src: url("fonts/aperture-serif.ttf")   format("truetype"); }
+  @font-face { font-family: "Aperture Script";  src: url("fonts/aperture-script.ttf")  format("truetype"); }
+  @font-face { font-family: "Aperture Hand";    src: url("fonts/aperture-hand.ttf")    format("truetype"); }
+  @font-face { font-family: "Aperture Moderne"; src: url("fonts/aperture-moderne.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Olde";    src: url("fonts/aperture-olde.ttf")    format("truetype"); }
+
+  :root {
+    --ink: #1a1815;
+    --paper: #faf7f2;
+    --faint: #857f75;
+    --rule: #e2dcd2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #ece7de; --paper: #191714; --faint: #8f887c; --rule: #2e2b26; }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Aperture Sans", system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 4rem 1.5rem 6rem; }
+  header { margin-bottom: 4.5rem; }
+  header h1 { font-size: clamp(2.6rem, 8vw, 5rem); font-weight: normal; }
+  header p { color: var(--faint); max-width: 34rem; margin-top: 1rem; }
+  header a { color: inherit; }
+
+  section { border-top: 1px solid var(--rule); padding: 2.5rem 0 3rem; }
+  .label {
+    font-family: system-ui, sans-serif;
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--faint);
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .label a { color: var(--faint); }
+  .headline { font-size: clamp(2rem, 6.5vw, 4.2rem); margin: 1.2rem 0 .8rem; overflow-wrap: anywhere; }
+  .alphabet { font-size: clamp(1.05rem, 2.6vw, 1.6rem); overflow-wrap: anywhere; color: var(--ink); }
+  .sample { font-size: clamp(1rem, 2.4vw, 1.35rem); margin-top: .9rem; max-width: 48rem; overflow-wrap: anywhere; }
+
+  .sans    { font-family: "Aperture Sans", sans-serif; }
+  .serif   { font-family: "Aperture Serif", serif; }
+  .script  { font-family: "Aperture Script", cursive; }
+  .hand    { font-family: "Aperture Hand", cursive; }
+  .moderne { font-family: "Aperture Moderne", serif; }
+  .olde    { font-family: "Aperture Olde", serif; }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 2rem; color: var(--faint); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Aperture</h1>
+    <p>
+      Six typefaces generated from one set of stroke skeletons &mdash; every
+      glyph is authored once as pen centerlines, then each face re-renders
+      them under a different model of the writing tool. Fonts, engine, and
+      specimens live at
+      <a href="https://github.com/JimothyJohn/fonts">JimothyJohn/fonts</a>.
+    </p>
+  </header>
+
+  <section>
+    <div class="label"><span>Aperture Sans &mdash; uniform round stroke</span><a href="fonts/aperture-sans.ttf">download</a></div>
+    <div class="headline sans">The quick brown fox jumps over the lazy dog</div>
+    <div class="alphabet sans">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,:-!?</div>
+    <p class="sample sans">Grumpy wizards make toxic brew for the evil queen and jack. Pack my box with five dozen liquor jugs: 42!</p>
+  </section>
+
+  <section>
+    <div class="label"><span>Aperture Serif &mdash; bracketed feet, auto-grown from declared terminals</span><a href="fonts/aperture-serif.ttf">download</a></div>
+    <div class="headline serif">Quills wrote history before keys did</div>
+    <div class="alphabet serif">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,:-!?</div>
+    <p class="sample serif">Grumpy wizards make toxic brew for the evil queen and jack. Pack my box with five dozen liquor jugs: 42!</p>
+  </section>
+
+  <section>
+    <div class="label"><span>Aperture Script &mdash; slanted, exit tails, cursive loops</span><a href="fonts/aperture-script.ttf">download</a></div>
+    <div class="headline script">Handwriting that keeps its flow</div>
+    <div class="alphabet script">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,:-!?</div>
+    <p class="sample script">Grumpy wizards make toxic brew for the evil queen and jack. Pack my box with five dozen liquor jugs: 42!</p>
+  </section>
+
+  <section>
+    <div class="label"><span>Aperture Hand &mdash; per-occurrence variation, three alternates a letter</span><a href="fonts/aperture-hand.ttf">download</a></div>
+    <div class="headline hand">no two letters land quite the same</div>
+    <div class="alphabet hand">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,:-!?</div>
+    <p class="sample hand">Grumpy wizards make toxic brew for the evil queen and jack. Pack my box with five dozen liquor jugs: 42!</p>
+  </section>
+
+  <section>
+    <div class="label"><span>Aperture Moderne &mdash; didone contrast, balls, hairline serifs</span><a href="fonts/aperture-moderne.ttf">download</a></div>
+    <div class="headline moderne">Vogue Girl 1923: gorgeous, exquisite</div>
+    <div class="alphabet moderne">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,:-!?</div>
+    <p class="sample moderne">Grumpy wizards make toxic brew for the evil queen and jack. Pack my box with five dozen liquor jugs: 42!</p>
+  </section>
+
+  <section>
+    <div class="label"><span>Aperture Olde &mdash; broad-nib textura, fractured, diamond feet</span><a href="fonts/aperture-olde.ttf">download</a></div>
+    <div class="headline olde">Ye Olde Curiosity Shoppe, verily</div>
+    <div class="alphabet olde">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,:-!?</div>
+    <p class="sample olde">Grumpy wizards make toxic brew for the evil queen and jack. Pack my box with five dozen liquor jugs: 42!</p>
+  </section>
+
+  <footer>
+    Every face is deterministic: same source, byte-identical build.
+    Geometry by shapely, assembly by fontTools.
+  </footer>
+</main>
+</body>
+</html>
