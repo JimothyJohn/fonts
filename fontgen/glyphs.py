@@ -26,8 +26,6 @@ Curved letters (O, C, G, Q, S, ring-based digits) declare no terminals --
 serifs belong at the ends of straight strokes, not on curves.
 """
 
-import math
-
 from fontgen.metrics import BASE, CAP, DESCENT, MID, OVERSHOOT, STROKE, X_HEIGHT
 from fontgen.primitives import (
     arc_band,
