@@ -1,8 +1,11 @@
-"""Serif-foot geometry, generated from a glyph's declared terminals rather
-than hand-assembled per letter.
+"""Serif-face design constants and foot geometry.
 
-`serif_foot(point, toward)` is the only entry point a caller needs: it
-looks at the direction from `point` back toward `toward` and picks the
+Two things live here: the elliptical PEN the serif face is stroked with
+(see fontgen/glyphs_serif.py for the stroking itself), and the serif-foot
+constructions generated from each glyph's declared terminals.
+
+`serif_foot(point, toward)` is the only foot entry point a caller needs:
+it looks at the direction from `point` back toward `toward` and picks the
 matching construction automatically --
 
 - near-vertical  -> a flat foot flaring via a concave fillet into the stem
@@ -26,27 +29,54 @@ import math
 
 from shapely.geometry import LineString, Polygon
 
-from fontgen.metrics import XMID
+from fontgen.metrics import STROKE, XMID
 from fontgen.primitives import arc_pts
 
-# Stem half-width (matches the stroke width every stem is already drawn
-# at), how far a foot's flat edge extends past the stem, and the fillet
-# radius that blends between them. A flat rectangle laid across a stem end
-# reads as a crossbar, not a serif -- the fillet is what makes the stem
-# visually *widen into* the foot instead of a foot being overlaid on top.
-BRACKET_SW = 39.0
-BRACKET_FOOT_W = 90.0
-BRACKET_FILLET_R = 45.0
+# The serif face's pen: an axis-aligned ellipse swept along each stroke
+# centerline. PEN_THICK is the full width of a vertical stem; PEN_THIN the
+# full weight of a horizontal. PEN_THIN deliberately equals the skeleton
+# grid's circular STROKE, so every vertical relationship the skeletons
+# were tuned against (bar weights, bowl overshoot, how far a cap bulges
+# past a stem's end) is preserved exactly -- contrast comes only from
+# widening the thick axis. The ~1.4 ratio with vertical stress is the
+# newsprint "legibility group" (Ionic/Century) class of text faces.
+PEN_THICK = 108.0
+PEN_THIN = float(STROKE)
+
+# Stem/arm half-widths under that pen, and the distance the pen's cap
+# bulges past a stroke's endpoint: the thin semi-axis vertically past a
+# vertical stem's end, the thick semi-axis horizontally past a horizontal
+# arm's end. The bulge is what a foot's flat edge must shift outward to
+# swallow -- a foot drawn right at the terminal would leave the cap's
+# curve poking past it as its own lump.
+STEM_HW = PEN_THICK / 2
+ARM_HW = PEN_THIN / 2
+CAP_BULGE_V = PEN_THIN / 2
+CAP_BULGE_H = PEN_THICK / 2
+
+# Foot reach past the stem centerline, and the fillet radius that blends
+# foot into stem. A flat rectangle laid across a stem end reads as a
+# crossbar, not a serif -- the fillet is what makes the stem visually
+# *widen into* the foot. FOOT_W - FILLET_R equals STEM_HW exactly, so each
+# fillet's inner end lands right on the stem's edge with no ledge.
+BRACKET_FOOT_W = 100.0
+BRACKET_FILLET_R = 46.0
 BRACKET_OVERLAP = 50.0
 
+# Arm-end flags keep a slightly shorter reach: an arm is thin (ARM_HW), so
+# a full-length flag on it reads longer than the same flag on a stem.
+ARM_FOOT_W = 90.0
+ARM_FILLET_R = 45.0
+
 # A diagonal's guideline pad: half-width along the guideline (sized to
-# match the bracket foot's reach) and its flat thickness.
-DIAG_FOOT_W = 92.0
+# match the bracket foot's reach against the wider diagonal strokes the
+# pen draws) and its flat thickness.
+DIAG_FOOT_W = 96.0
 DIAG_FOOT_T = 50.0
 
 # A terminal within this many degrees of true vertical or true horizontal
 # gets the bracketed foot; anything else (every real diagonal in this
-# font -- A's ~70 degrees through six's ~20) gets the elliptical flare.
+# font -- A's ~70 degrees through six's ~20) gets the guideline pad.
 # The two bracket cases are unambiguous (every straight stem/arm in this
 # font is either exactly vertical or exactly horizontal); this threshold
 # only has to be strict enough to keep true diagonals off the bracket
@@ -56,20 +86,20 @@ DIAG_FOOT_T = 50.0
 AXIS_TOLERANCE_DEG = 5.0
 
 
-def _bracket_foot(cx, y0, up, sw, fw, r, overlap):
+def _bracket_foot(cx, y0, up, sw, fw, r, overlap, bulge):
     """A flat foot on the line y=y0, flaring via concave fillets into a
     vertical stem of half-width sw that continues away from y0. `up=True`
     means the stem rises above y0 (a bottom serif); `up=False` means it
     descends below y0 (a top serif).
 
-    The stem this attaches to is drawn with a round cap (matching the rest
-    of the font), which bulges sw units past y0 in the outward direction --
-    past the flat foot edge this would otherwise draw right at y0, leaving
-    the cap's round bulge poking out as its own separate lump. Shifting y0
-    outward by sw first makes the foot's own silhouette fully swallow that
-    bulge instead.
+    The stem this attaches to is drawn with the pen's round cap, which
+    bulges `bulge` units past y0 in the outward direction -- past the flat
+    foot edge this would otherwise draw right at y0, leaving the cap's
+    curve poking out as its own separate lump. Shifting y0 outward by
+    `bulge` first makes the foot's own silhouette fully swallow that
+    curve instead.
     """
-    y0 = y0 - sw if up else y0 + sw
+    y0 = y0 - bulge if up else y0 + bulge
     stem_y = y0 + r if up else y0 - r
     cap_y = stem_y + overlap if up else stem_y - overlap
     foot_angle = 270 if up else 90
@@ -84,22 +114,23 @@ def _bracket_foot(cx, y0, up, sw, fw, r, overlap):
     return Polygon(boundary)
 
 
-def _bracket_foot_h(x0, cy, rightward, sw, fw, r, overlap, guideline_shift):
+def _bracket_foot_h(x0, cy, rightward, sw, fw, r, overlap, guideline_shift, bulge):
     """The same bracketed foot as _bracket_foot, rotated 90 degrees for a
     HORIZONTAL stem (an arm/crossbar end). `rightward=True` means the stem
     runs to the right of x0 (a left-end serif); `rightward=False` means it
-    runs left (a right-end serif).
+    runs left (a right-end serif). `bulge` is how far the pen's cap
+    extends horizontally past the arm's endpoint (the pen's thick
+    semi-axis), which the foot shifts outward to swallow.
 
     Every horizontal terminal in this font sits exactly on a top or bottom
     guideline (cap-height, x-height, or baseline) -- so a foot centered
     symmetrically on cy would spread `fw` units above AND below it, poking
     `fw` units past the guideline on the outward side. `guideline_shift`
-    (positive to shift the center down, negative to shift it up) keeps only
-    a small deliberate overshoot there, matching how round letters already
-    overshoot, instead of a large accidental one.
+    keeps only a small deliberate overshoot there, matching how round
+    letters already overshoot, instead of a large accidental one.
     """
     cy = cy + guideline_shift
-    x0 = x0 - sw if rightward else x0 + sw
+    x0 = x0 - bulge if rightward else x0 + bulge
     stem_x = x0 + r if rightward else x0 - r
     cap_x = stem_x + overlap if rightward else stem_x - overlap
     foot_angle = 180 if rightward else 0
@@ -122,7 +153,7 @@ def _bracket_foot_h(x0, cy, rightward, sw, fw, r, overlap, guideline_shift):
     return Polygon(boundary)
 
 
-def _guideline_pad(px, py, up, fw, t, sw):
+def _guideline_pad(px, py, up, fw, t, bulge):
     """A serif foot for a DIAGONAL stroke terminal at (px, py): a flat pad
     laid along the horizontal guideline the stroke ends on -- which is how
     diagonal serifs actually sit in seriffed faces (A's and V's feet rest
@@ -134,13 +165,13 @@ def _guideline_pad(px, py, up, fw, t, sw):
     aligned construction that shared an exact edge with the stroke was a
     GEOS union trap (TopologyException / spiky slivers), so like the fix
     that replaced it, this shape never coincides with the stroke's own
-    edges -- it's axis-aligned while the stroke is not. Second, the
-    stroke's round end cap bulges `sw` past the terminal, so the pad's
-    outer edge sits `sw` outside py (exactly like _bracket_foot's shift)
-    to swallow that bulge; a stadium (flat top/bottom, round ends) keeps
-    the ends in the font's own round-cap vocabulary.
+    edges -- it's axis-aligned while the stroke is not. Second, the pen's
+    cap dips `bulge` (its thin semi-axis) past the terminal, so the pad's
+    outer edge sits `bulge` outside py (exactly like _bracket_foot's
+    shift) to swallow that curve; a stadium (flat top/bottom, round ends)
+    keeps the ends in the font's own round-cap vocabulary.
     """
-    y_out = py - sw if up else py + sw
+    y_out = py - bulge if up else py + bulge
     cy = y_out + t / 2 if up else y_out - t / 2
     r = t / 2
     return LineString([(px - fw + r, cy), (px + fw - r, cy)]).buffer(
@@ -163,7 +194,14 @@ def serif_foot(point, toward):
     if from_vertical <= AXIS_TOLERANCE_DEG:
         up = dy > 0
         return _bracket_foot(
-            px, py, up, BRACKET_SW, BRACKET_FOOT_W, BRACKET_FILLET_R, BRACKET_OVERLAP
+            px,
+            py,
+            up,
+            STEM_HW,
+            BRACKET_FOOT_W,
+            BRACKET_FILLET_R,
+            BRACKET_OVERLAP,
+            CAP_BULGE_V,
         )
     if from_horizontal <= AXIS_TOLERANCE_DEG:
         rightward = dx > 0
@@ -173,18 +211,19 @@ def serif_foot(point, toward):
         # terminal's own height instead. Top => shift the foot down so it
         # doesn't poke above the guideline; bottom => shift it up.
         on_top_guideline = py > XMID
-        shift = (BRACKET_FOOT_W - 15) * (-1 if on_top_guideline else 1)
+        shift = (ARM_FOOT_W - 15) * (-1 if on_top_guideline else 1)
         return _bracket_foot_h(
             px,
             py,
             rightward,
-            BRACKET_SW,
-            BRACKET_FOOT_W,
-            BRACKET_FILLET_R,
+            ARM_HW,
+            ARM_FOOT_W,
+            ARM_FILLET_R,
             BRACKET_OVERLAP,
             shift,
+            CAP_BULGE_H,
         )
     # A genuine diagonal: its terminal rests on a horizontal guideline, and
     # `up` (stroke rising away from the terminal) says which side the pad
     # goes on.
-    return _guideline_pad(px, py, dy > 0, DIAG_FOOT_W, DIAG_FOOT_T, BRACKET_SW)
+    return _guideline_pad(px, py, dy > 0, DIAG_FOOT_W, DIAG_FOOT_T, CAP_BULGE_V)
