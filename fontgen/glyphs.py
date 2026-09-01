@@ -416,7 +416,10 @@ def glyph_P(L=70, T=CAP, B=BASE):
 def glyph_B(L=70, T=CAP, B=BASE):
     # Bottom bowl bigger than the top -- the reverse reads upside-down/goofy.
     # r_bot = 350 - r_top keeps the two bowls meeting exactly, no gap/overlap.
-    r_top, r_bot = 120, 230
+    # 150/200 rather than the old 120/230: a top bowl barely half the
+    # bottom's size read as a caricature in every face, not classic
+    # top-light asymmetry.
+    r_top, r_bot = 150, 200
     cy_top = T - r_top
     cy_bot = r_bot
     shapes = [

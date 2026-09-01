@@ -36,14 +36,22 @@ Two optical corrections ride along, both things a circular pen hid:
   dots read as foreign next to contrast strokes -- and dots that sit on
   the baseline are dropped to the same optical line the serif feet
   define.
+- Free CURVE ends grow ball terminals, the legibility group's signature
+  finish (Century's c/r/f bulbs). A candidate is found structurally, not
+  by name: an open recorded stroke with enough points to be a curve
+  (straight chains never qualify), whose endpoint neither carries a
+  declared serif terminal (those get feet) nor lies buried in another
+  stroke's ink (bowl/arch ends flush against stems stay plain).
 """
+
+import math
 
 from shapely import affinity
 from shapely.geometry import LinearRing, LineString, Point
 
 from fontgen.glyphs import CMAP, SKELETONS
 from fontgen.metrics import BASE, STROKE
-from fontgen.primitives import finalize, record_strokes
+from fontgen.primitives import finalize, record_strokes, union_all
 from fontgen.serifs import PEN_THICK, PEN_THIN, serif_foot
 
 #: Extra vertical radius for closed rings, chosen so a capital ring's
@@ -63,6 +71,15 @@ DOT_LEN = 2.0
 #: the serif feet define (feet reach CAP_BULGE_V below; round shapes stop
 #: slightly short of round-letter overshoot, like the rings do).
 DOT_SINK = 30.0
+
+#: Ball-terminal radius (scaled by each stroke's recorded width, like the
+#: pen): diameter just past PEN_THICK, so the bulb reads as a deliberate
+#: full stop on the thin curve end without outweighing the stems.
+BALL_R = 55.0
+
+#: An open recorded stroke with at least this many points is a curve
+#: (arcs/spines are densely sampled; straight chains carry 2-5 points).
+CURVE_MIN_PTS = 8
 
 
 def _pen_stroke(stroke):
@@ -96,13 +113,32 @@ def _pen_stroke(stroke):
     return affinity.scale(swept, xfact=a, yfact=b, origin=(0.0, 0.0))
 
 
+def _ball_terminals(strokes, inked, terminals):
+    """Ball terminals for every free curve end (see module docstring)."""
+    term_pts = [p for p, _ in terminals]
+    balls = []
+    for i, s in enumerate(strokes):
+        if s["closed"] or len(s["pts"]) < CURVE_MIN_PTS:
+            continue
+        others = union_all([shape for j, shape in enumerate(inked) if j != i])
+        for ex, ey in (s["pts"][0], s["pts"][-1]):
+            if any(math.hypot(ex - tx, ey - ty) < 2 for tx, ty in term_pts):
+                continue
+            if not others.is_empty and others.covers(Point(ex, ey)):
+                continue
+            k = s["width"] / STROKE
+            balls.append(Point(ex, ey).buffer(BALL_R * k, quad_segs=24))
+    return balls
+
+
 def _serif(fn):
     def build():
         with record_strokes() as strokes:
             _shapes, advance, terminals = fn()
         inked = [_pen_stroke(s) for s in strokes]
+        balls = _ball_terminals(strokes, inked, terminals)
         feet = [serif_foot(point, toward) for point, toward in terminals]
-        return finalize([*inked, *feet]), advance
+        return finalize([*inked, *balls, *feet]), advance
 
     return build
 
