@@ -140,7 +140,9 @@ def _hook(stem_x, stem_top, hook_r, hook_cy, curl_end=-200):
     hook_cx = stem_x - hook_r
     return [
         _chain([(stem_x, stem_top), (stem_x, hook_cy - 5)]),
-        _bowl(hook_cx, hook_cy, hook_r, 0, curl_end),
+        # Round cap on the curl's free end: every other free end in the
+        # font is round, and the default flat cut reads as an angled chop.
+        _bowl(hook_cx, hook_cy, hook_r, 0, curl_end, cap_style="round"),
     ]
 
 
@@ -290,12 +292,10 @@ def glyph_N(L=70, R=570, T=CAP, B=BASE):
 
 def glyph_Z(L=70, R=570, T=CAP, B=BASE):
     shape = _chain([(L, T), (R, T), (L, B), (R, B)])
-    terminals = [
-        ((L, T), (R, T)),
-        ((R, T), (L, T)),
-        ((L, B), (R, B)),
-        ((R, B), (L, B)),
-    ]
+    # Only the two FREE bar ends get serifs. (R, T) and (L, B) are the
+    # corners where the diagonal turns -- joints, not terminals -- and
+    # serifs there filled Z's corners into solid blocks.
+    terminals = [((L, T), (R, T)), ((R, B), (L, B))]
     return [shape], 640, terminals
 
 
@@ -535,11 +535,17 @@ def glyph_six(L=100, R=570, T=CAP, B=BASE):
     # mid-air (where the derived faces put their ball/diamond
     # terminals). The old two-segment chain had a sharp elbow that read
     # as a broken flag in every face.
-    r_bowl = 170
+    # The neck's straight run sits ON the bowl's left band (bowl-left
+    # centerline, cx - r_bowl + STROKE/2), not at a fixed left margin --
+    # at r_bowl=170 the old L+20 start left a visible gap between neck
+    # and bowl at the waist. Bowl bumped up a size; at 170 it read tiny
+    # against the tall neck.
+    r_bowl = 190
     cx = (L + R) / 2
     cy_bowl = r_bowl
+    neck_x = cx - r_bowl + STROKE / 2
     rx, ry = 250, 215
-    neck = [(L + 20, cy_bowl)] + ellipse_pts(L + 20 + rx, T - ry, rx, ry, 180, 65)
+    neck = [(neck_x, cy_bowl)] + ellipse_pts(neck_x + rx, T - ry, rx, ry, 180, 65)
     shapes = [
         ring(cx, cy_bowl, r_bowl, r_bowl - STROKE),
         stroke_union([neck], STROKE, cap_style="round"),
@@ -569,11 +575,16 @@ def glyph_nine(L=100, R=570, T=CAP, B=BASE):
     # 6 rotated in spirit: bowl at the top, neck running down the right
     # side and sweeping out through a wide elliptical tail to the lower
     # left, ending mid-air near the baseline.
-    r_bowl = 170
+    # Mirror of six's fix: neck runs down the bowl's own right band
+    # (cx + r_bowl - STROKE/2) instead of a fixed R - 20, which sat just
+    # clear of the 170-radius bowl and left a seam; bowl enlarged to
+    # match six.
+    r_bowl = 190
     cx = (L + R) / 2
     cy_bowl = T - r_bowl
+    neck_x = cx + r_bowl - STROKE / 2
     rx, ry = 250, 215
-    neck = [(R - 20, cy_bowl)] + ellipse_pts(R - 20 - rx, B + ry, rx, ry, 0, -115)
+    neck = [(neck_x, cy_bowl)] + ellipse_pts(neck_x - rx, B + ry, rx, ry, 0, -115)
     shapes = [
         ring(cx, cy_bowl, r_bowl, r_bowl - STROKE),
         stroke_union([neck], STROKE, cap_style="round"),
@@ -621,13 +632,17 @@ def glyph_exclam():
 
 
 def glyph_question(L=90, R=530, T=CAP):
+    # Bowl opens at the LOWER LEFT: from ~175 the arc climbs over the top,
+    # down the right side, and hooks in toward the stem at -75. The old
+    # -150..90 sweep ran the other way around -- through the bottom -- and
+    # the nearly-closed circle over a hanging stem read as a qoppa.
     r = 150
     cx = (L + R) / 2
     cy = T - r
     stem_bottom = 220
     s = 90
     shapes = [
-        _bowl(cx, cy, r, -150, 90),
+        _bowl(cx, cy, r, 175, -75, cap_style="round"),
         _chain([(cx, cy - r + 20), (cx, stem_bottom)]),
         rect(cx - s / 2, 0, cx + s / 2, s),
     ]
@@ -638,10 +653,19 @@ def glyph_question(L=90, R=530, T=CAP):
 
 
 def glyph_a_lc():
-    # Plain single-storey a: bowl + stem, nothing else. The diagonal
-    # flicks this used to carry made it read as a broken-ascender d.
-    stem_x = 420
-    shapes = _stem_bowl(stem_x, X_HEIGHT, BASE, XMID, LOWER_RING_R, "left")
+    # Geometric single-storey a (the Century Gothic construction): a FULL
+    # round bowl -- the same ring as o -- with the stem overlapping its
+    # right edge. The previous half-ellipse bowl closed flat against the
+    # stem, and a half-disc with a bar down its flat side reads as a
+    # mirrored D, not an a; keeping the counter fully round is what makes
+    # the bowl read as a bowl.
+    r = LOWER_RING_R
+    cx = 250
+    stem_x = cx + r - STROKE / 2
+    shapes = [
+        ring(cx, XMID, r, r - STROKE),
+        _chain([(stem_x, BASE), (stem_x, X_HEIGHT)]),
+    ]
     terminals = [
         ((stem_x, X_HEIGHT), (stem_x, BASE)),
         ((stem_x, BASE), (stem_x, X_HEIGHT)),
@@ -650,9 +674,11 @@ def glyph_a_lc():
 
 
 def glyph_b_lc():
+    # Same full-x-height bowl as d/p/q -- the 0.82-scaled bowl this used
+    # to have hovered clear of both the baseline and x-height, which read
+    # as a thorn rather than a b.
     stem_x = 70
-    bowl_r = LOWER_RING_R * 0.82
-    shapes = _stem_bowl(stem_x, CAP, BASE, XMID, bowl_r, "right")
+    shapes = _stem_bowl(stem_x, CAP, BASE, XMID, LOWER_RING_R, "right")
     terminals = [((stem_x, BASE), (stem_x, CAP)), ((stem_x, CAP), (stem_x, BASE))]
     return shapes, 540, terminals
 
@@ -697,15 +723,17 @@ def glyph_g_lc():
     bowl_r = LOWER_RING_R
     y_top = XMID + bowl_r
     y_bottom = XMID - bowl_r
-    # A fuller hook than j's: bigger radius, curling further back up
-    # (-240 vs -200), so the descender reads as g's under-loop rather
-    # than a clipped flick that left the letter looking like a 9.
-    hook_r = 130
+    # A fuller hook than j's (bigger radius) so the descender reads as
+    # g's under-loop rather than a clipped flick -- but only slightly
+    # further back up (-190): the old -240 sweep curled the free end up
+    # past the baseline into the bowl's underside, tangling the two into
+    # a spiral.
+    hook_r = 125
     hook_cy = DESCENT + hook_r
     shapes = [
         _chain([(stem_x, hook_cy - 5), (stem_x, y_top)]),
         _bulge_bowl(stem_x, y_bottom, y_top, bowl_r, "left"),
-        _bowl(stem_x - hook_r, hook_cy, hook_r, 0, -240),
+        _bowl(stem_x - hook_r, hook_cy, hook_r, 0, -190, cap_style="round"),
     ]
     return shapes, 540, []
 
@@ -826,12 +854,9 @@ def glyph_y_lc(L=70, R=410):
 
 def glyph_z_lc(L=70, R=410):
     shape = _chain([(L, X_HEIGHT), (R, X_HEIGHT), (L, BASE), (R, BASE)])
-    terminals = [
-        ((L, X_HEIGHT), (R, X_HEIGHT)),
-        ((R, X_HEIGHT), (L, X_HEIGHT)),
-        ((L, BASE), (R, BASE)),
-        ((R, BASE), (L, BASE)),
-    ]
+    # Free bar ends only, as in Z -- with all four declared, the serifs on
+    # z's short bars merged into a solid block.
+    terminals = [((L, X_HEIGHT), (R, X_HEIGHT)), ((R, BASE), (L, BASE))]
     return [shape], 480, terminals
 
 
@@ -884,7 +909,9 @@ def glyph_t_lc():
         _chain([(stem_x, BASE), (stem_x, top)]),
         _chain([(stem_x - 90, X_HEIGHT), (stem_x + 90, X_HEIGHT)]),
     ]
-    terminals = [((stem_x, BASE), (stem_x, top)), ((stem_x, top), (stem_x, BASE))]
+    # Only the foot gets a terminal: a serif on t's stem TOP (which stops
+    # between x-height and cap, not on a guideline) read as a dagger.
+    terminals = [((stem_x, BASE), (stem_x, top))]
     return shapes, 400, terminals
 
 
@@ -892,12 +919,14 @@ def glyph_f_lc():
     stem_x = 170
     hook_r = 140
     hook_cy = CAP - hook_r
-    # Stem must reach the hook's flat-cut end (hook_cy + hook_r), not just
-    # its arc center, or the two pieces don't overlap. Sweep past 90 (and
-    # start a little before 0) for a curvier hook than a bare quarter-turn.
+    # Stem must reach the hook's top (hook_cy + hook_r), not just its arc
+    # center, or the two pieces don't overlap. The hook stays in the upper
+    # quadrant (25..100): sweeping on down to -15 made its free end droop
+    # level with -- and nearly touch -- the crossbar, closing the letter
+    # into a scythe.
     shapes = [
         _chain([(stem_x, BASE), (stem_x, hook_cy + hook_r)]),
-        _bowl(stem_x, hook_cy, hook_r, -15, 110),
+        _bowl(stem_x, hook_cy, hook_r, 25, 100, cap_style="round"),
         _chain([(stem_x - 90, X_HEIGHT), (stem_x + 90, X_HEIGHT)]),
     ]
     terminals = [((stem_x, BASE), (stem_x, hook_cy))]

@@ -9,8 +9,9 @@ matching construction automatically --
   (bracketed, like Times' serifs on I/H/L).
 - near-horizontal -> the same bracket, rotated 90 degrees, for arm/crossbar
   ends (E, F, T, Z).
-- anything else (a genuine diagonal) -> a smooth elliptical flare aligned
-  with the stroke's own angle.
+- anything else (a genuine diagonal) -> a flat axis-aligned pad laid along
+  the horizontal guideline the stroke ends on (every diagonal terminal in
+  this font ends on cap height, x-height, or the baseline).
 
 Earlier versions of this module hand-picked one of three constructors per
 terminal, with a manual up=/rightward=/toward= flag at every call site --
@@ -23,8 +24,9 @@ entirely, so there's no longer a way for them to disagree.
 
 import math
 
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
 
+from fontgen.metrics import XMID
 from fontgen.primitives import arc_pts
 
 # Stem half-width (matches the stroke width every stem is already drawn
@@ -37,12 +39,10 @@ BRACKET_FOOT_W = 90.0
 BRACKET_FILLET_R = 45.0
 BRACKET_OVERLAP = 50.0
 
-# A diagonal's flare: wide across the stroke, shallow along it, and pulled
-# slightly inward from the terminal (push) so it doesn't perch entirely
-# outside the stroke's own ink.
-DIAG_FOOT_W = 95.0
-DIAG_DEPTH = 42.0
-DIAG_PUSH = 0.05
+# A diagonal's guideline pad: half-width along the guideline (sized to
+# match the bracket foot's reach) and its flat thickness.
+DIAG_FOOT_W = 92.0
+DIAG_FOOT_T = 50.0
 
 # A terminal within this many degrees of true vertical or true horizontal
 # gets the bracketed foot; anything else (every real diagonal in this
@@ -122,46 +122,30 @@ def _bracket_foot_h(x0, cy, rightward, sw, fw, r, overlap, guideline_shift):
     return Polygon(boundary)
 
 
-def _diagonal_flare(px, py, ux, uy, fw, depth, push):
-    """A serif flare for a DIAGONAL stroke terminal at (px, py), oriented
-    to match the stroke's actual direction (ux, uy) instead of assuming a
-    vertical or horizontal stem.
+def _guideline_pad(px, py, up, fw, t, sw):
+    """A serif foot for a DIAGONAL stroke terminal at (px, py): a flat pad
+    laid along the horizontal guideline the stroke ends on -- which is how
+    diagonal serifs actually sit in seriffed faces (A's and V's feet rest
+    ON the baseline/cap line, they don't hang off the stroke at its own
+    angle). `up=True` means the stroke rises away from the pad (a
+    baseline/bottom foot); `up=False` a cap-height/x-height top pad.
 
-    Two earlier approaches both failed. Reusing the vertical bracket
-    unrotated made the flare run vertically while the stroke ran off at an
-    angle, reading as a stray vertical nub bolted onto the diagonal.
-    Rotating (or shearing) a hand-built bracket polygon to match the angle
-    fixed the direction but introduced a *precision* bug: the polygon's
-    "buried" edge was constructed to land exactly on the real stroke's own
-    edge, and at a generic (non axis-aligned) angle that exact coincidence
-    is a classic GEOS robustness trap -- unary_union either threw
-    'TopologyException: side location conflict' outright, or silently
-    produced a spiky sliver where the near-coincident edges got resolved
-    the wrong way, worse the further the angle sat from vertical.
-
-    This sidesteps the whole problem: instead of matching the stroke's
-    width exactly, it's a smooth parametrized ellipse -- wide (fw) across
-    the stroke, shallow (depth) along it -- centered just inside the
-    terminal. A curve has no straight edges to exactly coincide with
-    anything, so it unions with the stroke exactly the way every other
-    curved shape in this codebase already does (bowls, hooks, rings), with
-    no special-cased robustness issue.
+    Two constraints shape this. First, robustness: an earlier stroke-angle-
+    aligned construction that shared an exact edge with the stroke was a
+    GEOS union trap (TopologyException / spiky slivers), so like the fix
+    that replaced it, this shape never coincides with the stroke's own
+    edges -- it's axis-aligned while the stroke is not. Second, the
+    stroke's round end cap bulges `sw` past the terminal, so the pad's
+    outer edge sits `sw` outside py (exactly like _bracket_foot's shift)
+    to swallow that bulge; a stadium (flat top/bottom, round ends) keeps
+    the ends in the font's own round-cap vocabulary.
     """
-    perp = (-uy, ux)
-    cx, cy = px + depth * push * ux, py + depth * push * uy
-    n = 40
-    pts = []
-    for i in range(n):
-        t = 2 * math.pi * i / n
-        local_x = fw * math.cos(t)
-        local_y = depth * math.sin(t)
-        pts.append(
-            (
-                cx + local_x * perp[0] + local_y * ux,
-                cy + local_x * perp[1] + local_y * uy,
-            )
-        )
-    return Polygon(pts)
+    y_out = py - sw if up else py + sw
+    cy = y_out + t / 2 if up else y_out - t / 2
+    r = t / 2
+    return LineString([(px - fw + r, cy), (px + fw - r, cy)]).buffer(
+        r, quad_segs=16, cap_style="round"
+    )
 
 
 def serif_foot(point, toward):
@@ -172,8 +156,6 @@ def serif_foot(point, toward):
     px, py = point
     tx, ty = toward
     dx, dy = tx - px, ty - py
-    length = math.hypot(dx, dy)
-    ux, uy = dx / length, dy / length
     angle = math.degrees(math.atan2(dy, dx))
     from_vertical = abs(abs(angle) - 90)
     from_horizontal = min(abs(angle), abs(abs(angle) - 180))
@@ -185,10 +167,13 @@ def serif_foot(point, toward):
         )
     if from_horizontal <= AXIS_TOLERANCE_DEG:
         rightward = dx > 0
-        # Stroke goes down from here (dy < 0) => this terminal sits on a
-        # TOP guideline, so the foot must shift down to avoid overshooting
-        # above it; stroke goes up => a BOTTOM guideline, shift up.
-        shift = (BRACKET_FOOT_W - 15) * (-1 if dy < 0 else 1)
+        # A horizontal terminal sits ON a top guideline (cap or x-height)
+        # or a bottom one (the baseline) -- its own stroke runs level, so
+        # its direction says nothing about which; classify by the
+        # terminal's own height instead. Top => shift the foot down so it
+        # doesn't poke above the guideline; bottom => shift it up.
+        on_top_guideline = py > XMID
+        shift = (BRACKET_FOOT_W - 15) * (-1 if on_top_guideline else 1)
         return _bracket_foot_h(
             px,
             py,
@@ -199,4 +184,7 @@ def serif_foot(point, toward):
             BRACKET_OVERLAP,
             shift,
         )
-    return _diagonal_flare(px, py, ux, uy, DIAG_FOOT_W, DIAG_DEPTH, DIAG_PUSH)
+    # A genuine diagonal: its terminal rests on a horizontal guideline, and
+    # `up` (stroke rising away from the terminal) says which side the pad
+    # goes on.
+    return _guideline_pad(px, py, dy > 0, DIAG_FOOT_W, DIAG_FOOT_T, BRACKET_SW)
