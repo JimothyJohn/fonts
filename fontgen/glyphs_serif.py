@@ -51,7 +51,15 @@ from shapely.geometry import LinearRing, LineString, Point
 
 from fontgen.glyphs import CMAP, SKELETONS
 from fontgen.metrics import BASE, STROKE
-from fontgen.primitives import finalize, record_strokes, union_all
+from fontgen.primitives import (
+    disc,
+    ellipse_band,
+    ellipse_pts,
+    finalize,
+    record_strokes,
+    stroke_union,
+    union_all,
+)
 from fontgen.serifs import PEN_THICK, PEN_THIN, serif_foot
 
 #: Extra vertical radius for closed rings, chosen so a capital ring's
@@ -143,6 +151,56 @@ def _serif(fn):
     return build
 
 
-GLYPHS = {name: _serif(fn) for name, fn in SKELETONS.items()}
+# ---- serif-only skeleton overrides ----------------------------------------
+#
+# The shared skeletons draw the letterforms every face inherits, but two of
+# them are GEOMETRIC constructions that fight the legibility-group voice the
+# pen gives this face. They're redrawn here -- same (shapes, advance,
+# terminals) contract, same recording primitives, so the pen, ball, and foot
+# machinery applies unchanged -- WITHOUT touching the skeletons the sans and
+# the other five faces build from.
+
+
+def _skeleton_a():
+    """Two-storey a. The shared skeleton's a is a full ring with a stem
+    (Century Gothic's construction); in a seriffed text face the a wants a
+    bowl in its lower half and a hood arching over from the stem top --
+    that structure, not the serifs, is what makes it read as a text-face a.
+    The hood's free end earns its ball from the standard free-curve rule.
+    """
+    stem_x = 420
+    shapes = [
+        stroke_union([[(stem_x, BASE), (stem_x, 350)]], STROKE),
+        # Lower bowl: bulges left from the stem, spanning roughly the
+        # bottom 60% of the x-height.
+        ellipse_band(stem_x, 150, 250, 140, 90, 270, STROKE),
+        # Hood: leaves the stem top at its own ellipse's 0-degree point,
+        # arcs over tangent to x-height, and stops just past horizontal on
+        # the left -- sweeping further down crowded its ball terminal into
+        # the bowl's upper-left and closed the aperture.
+        stroke_union(
+            [ellipse_pts(280, 345, 140, 135, 0, 180)], STROKE, cap_style="round"
+        ),
+    ]
+    terminals = [((stem_x, BASE), (stem_x, 350))]
+    return shapes, 520, terminals
+
+
+def _skeleton_comma():
+    """Teardrop comma: a full-stop head with a tail flicking down-left --
+    the print form -- replacing the shared skeleton's blunt diagonal blob.
+    The head rides the same dot machinery as the period (round, sunk to
+    the serif feet's optical baseline).
+    """
+    shapes = [
+        disc(250, 25, 52),
+        stroke_union([[(262, 5), (238, -55), (196, -102)]], 58, cap_style="round"),
+    ]
+    return shapes, 420, []
+
+
+_OVERRIDES = {"a": _skeleton_a, "comma": _skeleton_comma}
+
+GLYPHS = {name: _serif(_OVERRIDES.get(name, fn)) for name, fn in SKELETONS.items()}
 
 __all__ = ["CMAP", "GLYPHS"]
