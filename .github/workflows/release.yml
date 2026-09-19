@@ -1,0 +1,54 @@
+# Attach the built fonts to a GitHub Release whenever a v* tag is pushed.
+# Flow: promote dev to master, then `git tag v0.2.0 && git push origin v0.2.0`.
+# The job rebuilds all seven faces from source on the runner and refuses to
+# publish if the rebuild differs from the tracked TTFs: builds are
+# deterministic, so a difference means out/ was not rebuilt after a source
+# change (see scripts/build-all.sh). Action pins are SHA-only; Dependabot's
+# github-actions ecosystem keeps them fresh.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies (locked)
+        run: uv sync --locked
+      - name: Rebuild all seven faces
+        run: |
+          uv run python scripts/make_font.py
+          uv run python scripts/make_font_serif.py
+          uv run python scripts/make_font_script.py
+          uv run python scripts/make_font_hand.py
+          uv run python scripts/make_font_moderne.py
+          uv run python scripts/make_font_blackletter.py
+          uv run python scripts/make_font_marquee.py
+      - name: Verify the rebuild matches the tracked fonts
+        run: |
+          git diff --exit-code --stat -- out/
+          for f in out/aperture-*.ttf; do
+            cmp "$f" "docs/fonts/$(basename "$f")"
+          done
+      - name: Bundle
+        run: |
+          mkdir -p dist
+          cp out/aperture-*.ttf LICENSE dist/
+          (cd dist && zip -q "../aperture-fonts-${GITHUB_REF_NAME}.zip" ./*)
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Aperture $GITHUB_REF_NAME" \
+            --generate-notes \
+            "aperture-fonts-${GITHUB_REF_NAME}.zip" dist/*.ttf
