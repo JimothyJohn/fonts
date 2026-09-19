@@ -8,11 +8,11 @@ constructions generated from each glyph's declared terminals.
 it looks at the direction from `point` back toward `toward` and picks the
 matching construction automatically --
 
-- near-vertical  -> a flat foot flaring via a concave fillet into the stem
-  (bracketed, like Times' serifs on I/H/L).
-- near-horizontal -> the same bracket, rotated 90 degrees, for arm/crossbar
-  ends (E, F, T, Z).
-- anything else (a genuine diagonal) -> a flat axis-aligned pad laid along
+- near-vertical  -> a thin slab flaring via a shallow concave bracket into
+  the stem (a flick, like a text face's serifs on I/H/L).
+- near-horizontal -> a beak: a thin tapered vertical flick off the arm's
+  far edge (E, F, T, Z).
+- anything else (a genuine diagonal) -> a thin axis-aligned pad laid along
   the horizontal guideline the stroke ends on (every diagonal terminal in
   this font ends on cap height, x-height, or the baseline).
 
@@ -30,7 +30,7 @@ import math
 from shapely.geometry import LineString, Polygon
 
 from fontgen.metrics import STROKE, XMID
-from fontgen.primitives import arc_pts
+from fontgen.primitives import ellipse_pts
 
 # The serif face's pen: an axis-aligned ellipse swept along each stroke
 # centerline. PEN_THICK is the full width of a vertical stem; PEN_THIN the
@@ -54,112 +54,105 @@ ARM_HW = PEN_THIN / 2
 CAP_BULGE_V = PEN_THIN / 2
 CAP_BULGE_H = PEN_THICK / 2
 
-# Foot reach past the stem centerline, and the fillet radius that blends
-# foot into stem. A flat rectangle laid across a stem end reads as a
-# crossbar, not a serif -- the fillet is what makes the stem visually
-# *widen into* the foot. FOOT_W - FILLET_R equals STEM_HW exactly, so each
-# fillet's inner end lands right on the stem's edge with no ledge.
-BRACKET_FOOT_W = 100.0
-BRACKET_FILLET_R = 46.0
+# The serif is a FLICK, not a block: a thin slab whose tips are FOOT_TIP
+# thick, rising through a shallow concave bracket (an elliptical quarter
+# arc FOOT_REACH - STEM_HW wide and FOOT_RISE tall) into the stem. The
+# slab's flat edge sits CAP_BULGE_V outside the terminal to swallow the
+# pen's round cap, so the face's baseline (the flats' ink) is that edge.
+# Earlier feet were a 46-unit quarter-circle wedge with no slab at all,
+# which read as a chunky block at text sizes.
+FOOT_REACH = 118.0
+FOOT_TIP = 12.0
+FOOT_RISE = 30.0
 BRACKET_OVERLAP = 50.0
 
-# Arm-end flags keep a slightly shorter reach: an arm is thin (ARM_HW), so
-# a full-length flag on it reads longer than the same flag on a stem.
-ARM_FOOT_W = 90.0
-ARM_FILLET_R = 45.0
+# Arm ends (E, F, T, L, Z) get a BEAK: a thin vertical flick hanging off
+# the arm's far edge on the side away from its guideline (down from a
+# top arm, up from a bottom one). BEAK_W is how far back along the arm
+# its base reaches, BEAK_TIP its thickness at the point, BEAK_DROP how
+# far past the arm's edge the point reaches. Its outer edge is flush
+# with the pen cap's extreme, so the corner is squared. The old flag was
+# a bracketed slab 2 * 90 tall and ~100 wide -- a block on every arm.
+BEAK_W = 58.0
+BEAK_TIP = 14.0
+BEAK_DROP = 62.0
 
-# A diagonal's guideline pad: half-width along the guideline (sized to
-# match the bracket foot's reach against the wider diagonal strokes the
-# pen draws) and its flat thickness.
-DIAG_FOOT_W = 96.0
-DIAG_FOOT_T = 50.0
+# A diagonal's guideline pad: a thin stadium along the guideline the
+# stroke ends on, half-width along the guideline and thickness.
+DIAG_FOOT_W = 84.0
+DIAG_FOOT_T = 24.0
 
 # A terminal within this many degrees of true vertical or true horizontal
-# gets the bracketed foot; anything else (every real diagonal in this
-# font -- A's ~70 degrees through six's ~20) gets the guideline pad.
-# The two bracket cases are unambiguous (every straight stem/arm in this
-# font is either exactly vertical or exactly horizontal); this threshold
-# only has to be strict enough to keep true diagonals off the bracket
-# path, since a rotated bracket's own fillet, sized for an axis-aligned
-# stem, doesn't stay well-behaved once the angle is more than a few
-# degrees off-axis (see the digit-six/digit-K regression this replaced).
+# gets the bracketed foot / beak; anything else (every real diagonal in
+# this font -- A's ~70 degrees through six's ~20) gets the guideline pad.
 AXIS_TOLERANCE_DEG = 5.0
 
 
-def _bracket_foot(cx, y0, up, sw, fw, r, overlap, bulge):
-    """A flat foot on the line y=y0, flaring via concave fillets into a
-    vertical stem of half-width sw that continues away from y0. `up=True`
-    means the stem rises above y0 (a bottom serif); `up=False` means it
-    descends below y0 (a top serif).
+def _bracket_foot(cx, y0, up, sw, fw, tip, rise, overlap, bulge):
+    """A flick foot on the line y=y0 for a vertical stem of half-width sw
+    continuing away from y0: a slab of thickness `tip` at its outer ends,
+    each end rising through a shallow concave elliptical bracket (fw - sw
+    wide, `rise` tall) to meet the stem's edge. `up=True` means the stem
+    rises above y0 (a bottom serif); `up=False` a top serif.
 
-    The stem this attaches to is drawn with the pen's round cap, which
-    bulges `bulge` units past y0 in the outward direction -- past the flat
-    foot edge this would otherwise draw right at y0, leaving the cap's
-    curve poking out as its own separate lump. Shifting y0 outward by
-    `bulge` first makes the foot's own silhouette fully swallow that
-    curve instead.
+    The stem is drawn with the pen's round cap, which bulges `bulge`
+    units past y0 outward; the slab's flat edge is shifted out by that
+    much so the foot's silhouette swallows the cap's curve instead of
+    leaving it poking out as its own lump.
     """
-    y0 = y0 - bulge if up else y0 + bulge
-    stem_y = y0 + r if up else y0 - r
-    cap_y = stem_y + overlap if up else stem_y - overlap
-    foot_angle = 270 if up else 90
-    right_fillet = arc_pts(cx + fw, stem_y, r, foot_angle, 180, n=16)
-    left_fillet = arc_pts(cx - fw, stem_y, r, 360 if up else 0, foot_angle, n=16)
+    sign = 1 if up else -1
+    base = y0 - sign * bulge
+    shoulder = base + sign * (tip + rise)
+    cap_y = shoulder + sign * overlap
+    rx = fw - sw
+    if up:
+        right = ellipse_pts(cx + fw, shoulder, rx, rise, 270, 180, n=16)
+        left = ellipse_pts(cx - fw, shoulder, rx, rise, 0, -90, n=16)
+    else:
+        right = ellipse_pts(cx + fw, shoulder, rx, rise, 90, 180, n=16)
+        left = ellipse_pts(cx - fw, shoulder, rx, rise, 0, 90, n=16)
     boundary = (
-        [(cx - fw, y0), (cx + fw, y0)]
-        + right_fillet[1:]
+        [(cx - fw, base), (cx + fw, base)]
+        + right
         + [(cx + sw, cap_y), (cx - sw, cap_y)]
-        + left_fillet
+        + left
     )
     return Polygon(boundary)
 
 
-def _bracket_foot_h(x0, cy, rightward, sw, fw, r, overlap, guideline_shift, bulge):
-    """The same bracketed foot as _bracket_foot, rotated 90 degrees for a
-    HORIZONTAL stem (an arm/crossbar end). `rightward=True` means the stem
-    runs to the right of x0 (a left-end serif); `rightward=False` means it
-    runs left (a right-end serif). `bulge` is how far the pen's cap
-    extends horizontally past the arm's endpoint (the pen's thick
-    semi-axis), which the foot shifts outward to swallow.
-
-    Every horizontal terminal in this font sits exactly on a top or bottom
-    guideline (cap-height, x-height, or baseline) -- so a foot centered
-    symmetrically on cy would spread `fw` units above AND below it, poking
-    `fw` units past the guideline on the outward side. `guideline_shift`
-    keeps only a small deliberate overshoot there, matching how round
-    letters already overshoot, instead of a large accidental one.
+def _arm_beak(px, py, rightward, on_top, hw, w, tip, drop, bulge):
+    """A beak at the end of a horizontal arm of half-thickness hw ending
+    at (px, py). `rightward=True` means the arm runs to the right of px
+    (a left-end beak); `on_top` says the arm sits on a top guideline, so
+    the beak hangs down from its underside (else it rises from its top
+    edge). The outer edge is flush with the pen cap's extreme, `bulge`
+    past px; the inner edge is a concave elliptical arc from the point
+    back to the arm.
     """
-    cy = cy + guideline_shift
-    x0 = x0 - bulge if rightward else x0 + bulge
-    stem_x = x0 + r if rightward else x0 - r
-    cap_x = stem_x + overlap if rightward else stem_x - overlap
-    foot_angle = 180 if rightward else 0
-    # The "far" end of each fillet is geometrically the same point (270 for
-    # the top fillet, 90 for the bottom) regardless of direction, but
-    # arc_pts sweeps directly between the two angle *values* given with no
-    # wraparound -- for rightward=False (foot_angle=0) using 270 literally
-    # would sweep the long way (270 degrees) instead of the short quarter
-    # turn, so it's expressed as -90 (0's short path) in that case.
-    top_fillet = arc_pts(
-        stem_x, cy + fw, r, foot_angle, 270 if rightward else -90, n=16
-    )
-    bottom_fillet = arc_pts(stem_x, cy - fw, r, 90, foot_angle, n=16)
-    boundary = (
-        [(x0, cy - fw), (x0, cy + fw)]
-        + top_fillet[1:]
-        + [(cap_x, cy + sw), (cap_x, cy - sw)]
-        + bottom_fillet
-    )
+    sx = -1 if rightward else 1  # outward direction along the arm
+    sy = -1 if on_top else 1  # direction the beak points, off the arm
+    xo = px + sx * bulge
+    y_near = py - sy * hw  # the arm's edge on the guideline side
+    y_edge = py + sy * hw  # the arm's edge the beak hangs off
+    y_tip = y_edge + sy * drop
+    # Concave inner edge: quarter ellipse centered on the arm's edge at
+    # the tip's x, from the arm (w back along it) to the point; walked
+    # point-first so the boundary runs outer edge -> point -> arm.
+    a_start = 180 if not rightward else 0
+    a_end = a_start + (90 if (not rightward) == on_top else -90)
+    inner = ellipse_pts(xo - sx * tip, y_edge, w - tip, drop, a_start, a_end, n=16)
+    boundary = [(xo, y_near), (xo, y_tip)] + inner[::-1] + [(xo - sx * w, y_near)]
     return Polygon(boundary)
 
 
 def _guideline_pad(px, py, up, fw, t, bulge):
-    """A serif foot for a DIAGONAL stroke terminal at (px, py): a flat pad
-    laid along the horizontal guideline the stroke ends on -- which is how
-    diagonal serifs actually sit in seriffed faces (A's and V's feet rest
-    ON the baseline/cap line, they don't hang off the stroke at its own
-    angle). `up=True` means the stroke rises away from the pad (a
-    baseline/bottom foot); `up=False` a cap-height/x-height top pad.
+    """A serif foot for a DIAGONAL stroke terminal at (px, py): a thin
+    flat pad laid along the horizontal guideline the stroke ends on --
+    which is how diagonal serifs actually sit in seriffed faces (A's and
+    V's feet rest ON the baseline/cap line, they don't hang off the
+    stroke at its own angle). `up=True` means the stroke rises away from
+    the pad (a baseline/bottom foot); `up=False` a cap-height/x-height
+    top pad.
 
     Two constraints shape this. First, robustness: an earlier stroke-angle-
     aligned construction that shared an exact edge with the stroke was a
@@ -192,35 +185,31 @@ def serif_foot(point, toward):
     from_horizontal = min(abs(angle), abs(abs(angle) - 180))
 
     if from_vertical <= AXIS_TOLERANCE_DEG:
-        up = dy > 0
         return _bracket_foot(
             px,
             py,
-            up,
+            dy > 0,
             STEM_HW,
-            BRACKET_FOOT_W,
-            BRACKET_FILLET_R,
+            FOOT_REACH,
+            FOOT_TIP,
+            FOOT_RISE,
             BRACKET_OVERLAP,
             CAP_BULGE_V,
         )
     if from_horizontal <= AXIS_TOLERANCE_DEG:
-        rightward = dx > 0
         # A horizontal terminal sits ON a top guideline (cap or x-height)
         # or a bottom one (the baseline) -- its own stroke runs level, so
         # its direction says nothing about which; classify by the
-        # terminal's own height instead. Top => shift the foot down so it
-        # doesn't poke above the guideline; bottom => shift it up.
-        on_top_guideline = py > XMID
-        shift = (ARM_FOOT_W - 15) * (-1 if on_top_guideline else 1)
-        return _bracket_foot_h(
+        # terminal's own height instead.
+        return _arm_beak(
             px,
             py,
-            rightward,
+            dx > 0,
+            py > XMID,
             ARM_HW,
-            ARM_FOOT_W,
-            ARM_FILLET_R,
-            BRACKET_OVERLAP,
-            shift,
+            BEAK_W,
+            BEAK_TIP,
+            BEAK_DROP,
             CAP_BULGE_H,
         )
     # A genuine diagonal: its terminal rests on a horizontal guideline, and
