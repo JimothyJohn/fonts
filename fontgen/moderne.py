@@ -11,10 +11,11 @@ them. That one rule turns O into a vertically-stressed didone O (thick
 sides, hairline top/bottom), makes crossbars and arms hairlines, and
 leaves stems at full display weight.
 
-A sampled curve is outlined as ONE smooth shape: the width is evaluated
-at every vertex and the two edges are offset from the centerline along
-the local normal, so the weight swells and thins continuously around a
-bowl with no facets. Straight authored chains are stroked segment by
+A sampled curve is outlined as ONE smooth shape
+(primitives.varwidth_outline): the width is evaluated at every vertex
+and the two edges are offset from the centerline along the local
+normal, so the weight swells and thins continuously around a bowl with
+no facets. Straight authored chains are stroked segment by
 segment with mitered joints, the crisp corners a didone wants.
 
 Three typographic conventions the pure angle rule can't express are
@@ -61,6 +62,7 @@ from fontgen.primitives import (
     polygon_to_contours,
     record_strokes,
     union_all,
+    varwidth_outline,
 )
 
 # The weight axis: full stems vs hairlines, and the easing power between
@@ -238,46 +240,6 @@ def _varwidth_shape(pts: list[Point], widths: list[float], closed: bool):
     return unary_union(quads).buffer(0)
 
 
-def _smooth_shape(pts: list[Point], widths: list[float], closed: bool):
-    """Outline a sampled curve as one continuous shape: at every vertex
-    the width is the mean of its two segments' and the edge points are
-    offset along the mitered vertex normal, so the contrast modulates
-    smoothly along the path. A closed path yields the annulus between
-    its two offset loops; an open one is capped flat at both ends."""
-    n = len(pts)
-    segs = list(itertools.pairwise(pts))
-    if closed:
-        segs.append((pts[-1], pts[0]))
-    normals = []
-    for (x0, y0), (x1, y1) in segs:
-        dx, dy = x1 - x0, y1 - y0
-        length = math.hypot(dx, dy)
-        normals.append((-dy / length, dx / length) if length > 1e-9 else (0.0, 0.0))
-    left, right = [], []
-    for i in range(n):
-        if closed:
-            a, b = (i - 1) % n, i
-        else:
-            a, b = max(i - 1, 0), min(i, n - 2)
-        (nax, nay), (nbx, nby) = normals[a], normals[b]
-        mx, my = nax + nbx, nay + nby
-        m = math.hypot(mx, my)
-        if m < 1e-9:
-            mx, my, m = nbx, nby, 1.0
-        dot = max(-1.0, min(1.0, nax * nbx + nay * nby))
-        miter = min(1.0 / max(math.sqrt((1 + dot) / 2), 1e-6), MITER_CAP)
-        ux, uy = mx / m * miter, my / m * miter
-        h = (widths[a] + widths[b]) / 4
-        x, y = pts[i]
-        left.append((x + ux * h, y + uy * h))
-        right.append((x - ux * h, y - uy * h))
-    if closed:
-        outer = sg.Polygon(left).buffer(0)
-        inner = sg.Polygon(right).buffer(0)
-        return outer.symmetric_difference(inner).buffer(0)
-    return sg.Polygon(left + right[::-1]).buffer(0)
-
-
 def _path_length(pts: list[Point]) -> float:
     return sum(math.dist(a, b) for a, b in itertools.pairwise(pts))
 
@@ -322,7 +284,7 @@ def _prepare(name: str, stroke: dict):
     scale = min(max(stroke["width"] / STROKE, 0.6), 1.5)
     widths = _seg_widths(name, pts, closed, scale)
     shape = (
-        _smooth_shape(pts, widths, closed)
+        varwidth_outline(pts, widths, closed, miter_cap=MITER_CAP)
         if is_curve
         else _varwidth_shape(pts, widths, closed)
     )

@@ -10,6 +10,7 @@ boolean geometry; this module just wraps it with the font-shape vocabulary
 contours the TrueType pen expects.
 """
 
+import itertools
 import math
 from contextlib import contextmanager
 
@@ -224,6 +225,74 @@ def disc(cx: float, cy: float, r: float):
     _record([(cx, cy), (cx + 0.5, cy)], 2 * r)
     quad_segs = max(2, CURVE_SEGMENTS // 4)
     return sg.Point(cx, cy).buffer(r, quad_segs=quad_segs)
+
+
+def varwidth_outline(
+    pts: list[Point],
+    widths: list[float],
+    closed: bool,
+    miter_cap: float = 2.0,
+    round_caps: bool = False,
+    round_joins: bool = False,
+):
+    """Outline a polyline with a width per SEGMENT (len(pts) - 1 widths,
+    or len(pts) if closed) as one smooth shape: at every vertex the width
+    is the mean of its two segments' and the edge points are offset along
+    the mitered vertex normal (miter length capped at `miter_cap` half
+    widths so a kink can't throw a spike). A closed path yields the
+    annulus between its two offset loops; an open one is capped flat at
+    both ends, or with a half-disc at each end when `round_caps`. With
+    `round_joins`, every vertex where the path turns by more than 45
+    degrees (an authored corner, not a sampled curve) also gets a disc
+    of the local width, the round join a pen leaves at an apex.
+
+    The variable-width stroke every pen-model face wants: contrast
+    modulating along a didone curve, pressure swelling along a
+    handwritten one.
+    """
+    n = len(pts)
+    segs = list(itertools.pairwise(pts))
+    if closed:
+        segs.append((pts[-1], pts[0]))
+    normals = []
+    for (x0, y0), (x1, y1) in segs:
+        dx, dy = x1 - x0, y1 - y0
+        length = math.hypot(dx, dy)
+        normals.append((-dy / length, dx / length) if length > 1e-9 else (0.0, 0.0))
+    left, right, joins = [], [], []
+    for i in range(n):
+        if closed:
+            a, b = (i - 1) % n, i
+        else:
+            a, b = max(i - 1, 0), min(i, n - 2)
+        (nax, nay), (nbx, nby) = normals[a], normals[b]
+        mx, my = nax + nbx, nay + nby
+        m = math.hypot(mx, my)
+        if m < 1e-9:
+            mx, my, m = nbx, nby, 1.0
+        dot = max(-1.0, min(1.0, nax * nbx + nay * nby))
+        miter = min(1.0 / max(math.sqrt((1 + dot) / 2), 1e-6), miter_cap)
+        ux, uy = mx / m * miter, my / m * miter
+        h = (widths[a] + widths[b]) / 4
+        x, y = pts[i]
+        left.append((x + ux * h, y + uy * h))
+        right.append((x - ux * h, y - uy * h))
+        if round_joins and a != b and dot < math.cos(math.radians(45)):
+            joins.append(((x, y), h))
+    quad_segs = max(2, CURVE_SEGMENTS // 4)
+    if closed:
+        outer = sg.Polygon(left).buffer(0)
+        inner = sg.Polygon(right).buffer(0)
+        shape = outer.symmetric_difference(inner).buffer(0)
+    else:
+        shape = sg.Polygon(left + right[::-1]).buffer(0)
+        if round_caps:
+            joins += [(pts[0], widths[0] / 2), (pts[-1], widths[-1] / 2)]
+    if joins:
+        shape = unary_union(
+            [shape, *(sg.Point(c).buffer(h, quad_segs=quad_segs) for c, h in joins)]
+        )
+    return shape
 
 
 def union_all(shapes):
