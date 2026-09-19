@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Rebuild every tracked font artifact after a geometry change: all seven
-# faces' TTFs, their alphabet and specimen sheets, and the docs/ copies
+# faces' TTFs (the sans as its full family), their alphabet and specimen
+# sheets, and the docs/ copies
 # the GitHub Pages specimen serves. Exits non-zero on the first failure
 # and prints every path it wrote.
 #
@@ -33,6 +34,15 @@ for face in "${faces[@]}"; do
   uv run python "scripts/$(make_script "$face")"
   uv run python scripts/render_alphabet.py "out/aperture-$face.ttf" "out/alphabet-$face.png"
   uv run python scripts/render_specimen.py "out/aperture-$face.ttf" "out/specimen-$face.png"
-  cp "out/aperture-$face.ttf" "docs/fonts/aperture-$face.ttf"
-  echo "wrote docs/fonts/aperture-$face.ttf"
+  if [[ "$face" == sans ]]; then
+    # make_font.py builds the whole family; ship every member.
+    uv run python scripts/render_family.py out/family-sans.png
+    for f in out/aperture-sans*.ttf; do
+      cp "$f" "docs/fonts/$(basename "$f")"
+      echo "wrote docs/fonts/$(basename "$f")"
+    done
+  else
+    cp "out/aperture-$face.ttf" "docs/fonts/aperture-$face.ttf"
+    echo "wrote docs/fonts/aperture-$face.ttf"
+  fi
 done

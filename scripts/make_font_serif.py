@@ -3,19 +3,14 @@ from fontgen.glyphs import CMAP
 from fontgen.glyphs_serif import GLYPHS
 from fontgen.metrics import CAP
 from fontgen.primitives import finalize, rect
+from fontgen.spacing import apply_optical_bearings
 
 FAMILY = "Aperture Serif"
 STYLE = "Regular"
 OUT = "out/aperture-serif.ttf"
 
-# Optical side-bearing corrections, applied AFTER normalize_spacing's
-# uniform pass. normalize_spacing gives every glyph identical bearings
-# measured from its ink extremes -- correct for seriffed flats, whose
-# feet present a full-height edge, but rounds touch that extreme at a
-# single mid-height point and diagonals/T-shapes are mostly air at their
-# widest, so both read as gappy at uniform bearings. Values are
-# (left, right) units to TIGHTEN each side; classic ratios: rounds tuck
-# ~a fifth of a bearing, open diagonals a bit more, T most of all.
+# Optical side-bearing tucks (see fontgen.spacing), tuned for seriffed
+# extremes: feet make every flat present a full-height edge.
 OPTICAL_TIGHTEN = {
     "O": (14, 14),
     "Q": (14, 14),
@@ -63,23 +58,11 @@ OPTICAL_TIGHTEN = {
 }
 
 
-def apply_optical_bearings(glyphs):
-    adjusted = {}
-    for name, (contours, advance) in glyphs.items():
-        dl, dr = OPTICAL_TIGHTEN.get(name, (0, 0))
-        if not contours or (dl == 0 and dr == 0):
-            adjusted[name] = (contours, advance)
-            continue
-        shifted = [[(x - dl, y) for x, y in contour] for contour in contours]
-        adjusted[name] = (shifted, advance - dl - dr)
-    return adjusted
-
-
 def main():
     glyphs = {".notdef": (finalize([rect(60, 0, 460, CAP)]), 520)}
     for name, fn in GLYPHS.items():
         glyphs[name] = fn()
-    glyphs = apply_optical_bearings(normalize_spacing(glyphs))
+    glyphs = apply_optical_bearings(normalize_spacing(glyphs), OPTICAL_TIGHTEN)
 
     build_font(glyphs, CMAP, FAMILY, STYLE, OUT)
     print(f"built {OUT} with {len(glyphs)} glyphs")
