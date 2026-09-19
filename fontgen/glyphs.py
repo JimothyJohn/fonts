@@ -26,6 +26,8 @@ Curved letters (O, C, G, Q, S, ring-based digits) declare no terminals --
 serifs belong at the ends of straight strokes, not on curves.
 """
 
+import math
+
 from fontgen.metrics import BASE, CAP, DESCENT, MID, OVERSHOOT, STROKE, X_HEIGHT
 from fontgen.primitives import (
     arc_band,
@@ -81,6 +83,25 @@ def _bowl(x, cy, r, a0=-90, a1=90, width=STROKE, cap_style="flat"):
 
 def _lerp(a, b, t):
     return a + (b - a) * t
+
+
+# Glyphs whose free ends need air against their own strokes take a `pen`
+# argument -- the width they will actually be inked at. The skeletons are
+# authored for STROKE, but the sans family re-inks them at other widths
+# (fontgen/sans.py), and a hook that clears its crossbar at 78 fuses with
+# it at 150. Everything else is weight-agnostic geometry.
+HOOK_GAP = 30
+
+
+def _asin_deg(x):
+    return math.degrees(math.asin(max(-1.0, min(1.0, x))))
+
+
+def _curl_end(end_at_stroke, pen):
+    """Where a descender hook's curl stops: the full sweep at STROKE,
+    pulled back 1 degree per unit of extra pen width so a heavy hook
+    stays an open hook instead of curling shut into a blob."""
+    return end_at_stroke + max(0.0, pen - STROKE)
 
 
 #: A bowl that bulges out no farther than its own half-height is a
@@ -752,7 +773,7 @@ def glyph_q_lc():
     return shapes, 540, terminals
 
 
-def glyph_g_lc():
+def glyph_g_lc(pen=STROKE):
     # Like q, but the descender curls into a hook instead of running
     # straight down. The single stem chain spans from the hook all the way
     # up to the bowl's own top point (not just to X_HEIGHT) so it closes
@@ -772,7 +793,9 @@ def glyph_g_lc():
     shapes = [
         _chain([(stem_x, hook_cy - 5), (stem_x, y_top)]),
         _bulge_bowl(stem_x, y_bottom, y_top, bowl_r, "left"),
-        _bowl(stem_x - hook_r, hook_cy, hook_r, 0, -190, cap_style="round"),
+        _bowl(
+            stem_x - hook_r, hook_cy, hook_r, 0, _curl_end(-190, pen), cap_style="round"
+        ),
     ]
     return shapes, 540, []
 
@@ -929,13 +952,13 @@ def glyph_i_lc():
     return shapes, 340, terminals
 
 
-def glyph_j_lc():
+def glyph_j_lc(pen=STROKE):
     stem_x = 250
     hook_r = 110
     hook_cy = DESCENT_CURVE + hook_r
     dot_cy = X_HEIGHT + 155
     shapes = [
-        *_hook(stem_x, X_HEIGHT, hook_r, hook_cy),
+        *_hook(stem_x, X_HEIGHT, hook_r, hook_cy, curl_end=_curl_end(-200, pen)),
         disc(stem_x, dot_cy, 45),
     ]
     return shapes, 460, []
@@ -968,10 +991,13 @@ def glyph_t_lc():
     return shapes, 400, terminals
 
 
-def glyph_f_lc():
+def glyph_f_lc(pen=STROKE):
     stem_x = 170
     hook_r = 120
     hook_cy = CAP_CURVE - hook_r
+    # A wider pen swallows the clearance between the hook's free end and
+    # the crossbar; lift the end just enough to keep HOOK_GAP of air.
+    end = max(0.0, _asin_deg((X_HEIGHT + pen + HOOK_GAP - hook_cy) / hook_r))
     # The hook is a quarter circle leaving the stem top tangentially (90)
     # and ending pointing straight down (0), its free end well clear of
     # the crossbar. The old 25..100 sweep at r=140 started 10 degrees
@@ -982,7 +1008,7 @@ def glyph_f_lc():
     # the hook's own top (hook_cy + hook_r) so the two pieces overlap.
     shapes = [
         _chain([(stem_x, BASE), (stem_x, hook_cy + hook_r)]),
-        _bowl(stem_x, hook_cy, hook_r, 0, 90, cap_style="round"),
+        _bowl(stem_x, hook_cy, hook_r, end, 90, cap_style="round"),
         _chain([(stem_x - BAR_LEFT, X_HEIGHT), (stem_x + BAR_RIGHT, X_HEIGHT)]),
     ]
     terminals = [((stem_x, BASE), (stem_x, hook_cy))]

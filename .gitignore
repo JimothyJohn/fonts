@@ -9,4 +9,5 @@ out/*
 !out/aperture-*.ttf
 !out/alphabet-*.png
 !out/specimen-*.png
+!out/family-*.png
 .DS_Store

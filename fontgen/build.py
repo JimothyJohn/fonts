@@ -1,11 +1,19 @@
 """Assemble a TTF from glyph contours using fontTools' low-level FontBuilder API."""
 
+import calendar
+
 from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
 from fontTools.fontBuilder import FontBuilder
+from fontTools.misc.timeTools import epoch_diff
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 
-from fontgen.metrics import ASCENT, CAP, DESCENT, SIDE_BEARING, UPM
+from fontgen.metrics import ASCENT, CAP, DESCENT, SIDE_BEARING, UPM, X_HEIGHT
 from fontgen.primitives import Point
+
+#: head.created/modified for every build (seconds since the 1904 Mac
+#: epoch): a fixed date instead of "now", so the same source produces the
+#: same bytes.
+BUILD_TIMESTAMP = calendar.timegm((2026, 1, 1, 0, 0, 0)) - epoch_diff
 
 GlyphSpec = tuple[list[list[Point]], float]  # (contours, advance_width)
 
@@ -48,6 +56,20 @@ def _draw_glyph(contours: list[list[Point]]):
     return pen.glyph()
 
 
+def legacy_names(family_name: str, style_name: str) -> tuple[str, str]:
+    """The name-table's legacy family/subfamily (IDs 1/2) can only express
+    Regular, Bold, Italic and Bold Italic. Any other weight folds into the
+    family name ("Aperture Sans Light" / "Italic") so old-style menus
+    still group and style-link it; IDs 16/17 carry the real family and
+    full subfamily for everything modern."""
+    words = style_name.split()
+    italic = "Italic" in words
+    weight = " ".join(w for w in words if w != "Italic") or "Regular"
+    if weight in ("Regular", "Bold"):
+        return family_name, style_name or "Regular"
+    return f"{family_name} {weight}", "Italic" if italic else "Regular"
+
+
 def build_font(
     glyphs: dict[str, GlyphSpec],
     cmap: dict[int, str],
@@ -55,6 +77,8 @@ def build_font(
     style_name: str,
     out_path: str,
     features: str | None = None,
+    weight_class: int = 400,
+    italic_angle: float = 0.0,
 ) -> None:
     glyph_order = [".notdef"] + [n for n in glyphs if n != ".notdef"]
 
@@ -75,17 +99,20 @@ def build_font(
     fb.setupHorizontalHeader(ascent=ASCENT, descent=DESCENT)
     ps_name = f"{family_name}-{style_name}".replace(" ", "")
     full_name = f"{family_name} {style_name}"
+    legacy_family, legacy_style = legacy_names(family_name, style_name)
     fb.setupNameTable(
         {
-            "familyName": family_name,
-            "styleName": style_name,
+            "familyName": legacy_family,
+            "styleName": legacy_style,
             "uniqueFontIdentifier": f"1.000;{ps_name}",
             "fullName": full_name,
             "version": "Version 1.000",
             "psName": ps_name,
+            "typographicFamily": family_name,
+            "typographicSubfamily": style_name,
         }
     )
-    is_bold = "Bold" in style_name
+    is_bold = legacy_style in ("Bold", "Bold Italic")
     is_italic = "Italic" in style_name
     # fsSelection's REGULAR bit (0x40) must be set whenever neither bold nor
     # italic is -- leaving it unset (as fontTools' default does) is what
@@ -100,9 +127,19 @@ def build_font(
         usWinAscent=ASCENT,
         usWinDescent=-DESCENT,
         sCapHeight=round(CAP),
+        sxHeight=round(X_HEIGHT),
+        usWeightClass=weight_class,
         fsSelection=fs_selection,
     )
-    fb.setupPost()
+    # updateHead, not setupHead: the latter re-initializes the whole table
+    # (glyph bounds, unitsPerEm) from defaults. Pinned timestamps keep the
+    # build byte-identical from run to run.
+    fb.updateHead(
+        macStyle=(0x01 if is_bold else 0) | (0x02 if is_italic else 0),
+        created=BUILD_TIMESTAMP,
+        modified=BUILD_TIMESTAMP,
+    )
+    fb.setupPost(italicAngle=-italic_angle)
 
     if features is not None:
         addOpenTypeFeaturesFromString(fb.font, features)

@@ -3,9 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Aperture — six faces, one skeleton</title>
+<title>Aperture — seven faces, one skeleton</title>
 <style>
-  @font-face { font-family: "Aperture Sans";    src: url("fonts/aperture-sans.ttf")    format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 300; font-style: normal; src: url("fonts/aperture-sans-light.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 300; font-style: italic; src: url("fonts/aperture-sans-light-italic.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 400; font-style: normal; src: url("fonts/aperture-sans.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 400; font-style: italic; src: url("fonts/aperture-sans-italic.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 500; font-style: normal; src: url("fonts/aperture-sans-medium.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 500; font-style: italic; src: url("fonts/aperture-sans-medium-italic.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 700; font-style: normal; src: url("fonts/aperture-sans-bold.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 700; font-style: italic; src: url("fonts/aperture-sans-bold-italic.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 900; font-style: normal; src: url("fonts/aperture-sans-black.ttf") format("truetype"); }
+  @font-face { font-family: "Aperture Sans"; font-weight: 900; font-style: italic; src: url("fonts/aperture-sans-black-italic.ttf") format("truetype"); }
   @font-face { font-family: "Aperture Serif";   src: url("fonts/aperture-serif.ttf")   format("truetype"); }
   @font-face { font-family: "Aperture Script";  src: url("fonts/aperture-script.ttf")  format("truetype"); }
   @font-face { font-family: "Aperture Hand";    src: url("fonts/aperture-hand.ttf")    format("truetype"); }
@@ -53,6 +62,10 @@
   .sample { font-size: clamp(1rem, 2.4vw, 1.35rem); margin-top: .9rem; max-width: 48rem; overflow-wrap: anywhere; }
 
   .sans    { font-family: "Aperture Sans", sans-serif; }
+  .weights { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1.5rem; align-items: baseline; margin-top: 1.4rem; font-size: clamp(1.1rem, 2.8vw, 1.7rem); }
+  .weights .label { display: block; }
+  .w300 { font-weight: 300; } .w500 { font-weight: 500; } .w700 { font-weight: 700; } .w900 { font-weight: 900; }
+  .it { font-style: italic; }
   .serif   { font-family: "Aperture Serif", serif; }
   .script  { font-family: "Aperture Script", cursive; }
   .hand    { font-family: "Aperture Hand", cursive; }
@@ -77,10 +90,17 @@
   </header>
 
   <section>
-    <div class="label"><span>Aperture Sans &mdash; uniform round stroke</span><a href="fonts/aperture-sans.ttf">download</a></div>
+    <div class="label"><span>Aperture Sans &mdash; uniform round stroke, five weights, upright and italic</span><a href="fonts/aperture-sans.ttf">download regular</a></div>
     <div class="headline sans">The quick brown fox jumps over the lazy dog</div>
     <div class="alphabet sans">ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,:-!?</div>
     <p class="sample sans">Grumpy wizards make toxic brew for the evil queen and jack. Pack my box with five dozen liquor jugs: 42!</p>
+    <div class="weights sans">
+      <span class="label">Light</span><span class="w300">Sphinx of black quartz, judge my vow <span class="it">&mdash; and in italic</span></span>
+      <span class="label">Regular</span><span>Sphinx of black quartz, judge my vow <span class="it">&mdash; and in italic</span></span>
+      <span class="label">Medium</span><span class="w500">Sphinx of black quartz, judge my vow <span class="it">&mdash; and in italic</span></span>
+      <span class="label">Bold</span><span class="w700">Sphinx of black quartz, judge my vow <span class="it">&mdash; and in italic</span></span>
+      <span class="label">Black</span><span class="w900">Sphinx of black quartz, judge my vow <span class="it">&mdash; and in italic</span></span>
+    </div>
   </section>
 
   <section>
