@@ -19,7 +19,9 @@ GlyphSpec = tuple[list[list[Point]], float]  # (contours, advance_width)
 
 
 def normalize_spacing(
-    glyphs: dict[str, GlyphSpec], side_bearing: float = SIDE_BEARING
+    glyphs: dict[str, GlyphSpec],
+    side_bearing: float = SIDE_BEARING,
+    spacing_bounds: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, GlyphSpec]:
     """Force every glyph to the same left/right side bearing, regardless of
     whatever ad hoc coordinates its contours were authored with.
@@ -29,6 +31,11 @@ def normalize_spacing(
     side_bearing. This is what keeps inter-letter spacing visually even
     without hand-tuning every glyph's bounds. Glyphs with no ink (e.g.
     "space") are left untouched.
+
+    `spacing_bounds` optionally names, per glyph, the (x_min, x_max) to
+    space from instead of the ink's own extremes -- how the cursive faces
+    let an exit tail overshoot the advance into the next letter while
+    the letter's body keeps standard bearings.
     """
     normalized = {}
     for name, (contours, advance) in glyphs.items():
@@ -37,6 +44,8 @@ def normalize_spacing(
             continue
         xs = [x for contour in contours for x, _ in contour]
         x_min, x_max = min(xs), max(xs)
+        if spacing_bounds and name in spacing_bounds:
+            x_min, x_max = spacing_bounds[name]
         shift = side_bearing - x_min
         shifted = [[(x + shift, y) for x, y in contour] for contour in contours]
         new_advance = (x_max - x_min) + 2 * side_bearing

@@ -10,6 +10,7 @@ from fontgen.script import (
     SLANT,
     TOP_EXIT,
     TOP_JOIN_Y,
+    body_bounds,
     make_glyphs,
     script_strokes,
 )
@@ -95,16 +96,31 @@ def test_uppercase_gets_no_tail_or_loops():
             assert unsheared == pytest.approx(p_sans)
 
 
-def test_long_straight_strokes_are_bowed():
-    """l's stem must no longer be a ruler line: resampled with interior
-    points that deviate from the endpoint chord."""
-    strokes = script_strokes("l", SKELETONS["l"])
-    stem = strokes[0]["pts"]
+def test_script_stems_are_straight_and_hand_stems_are_bowed():
+    """The script face is typeset: l's stem stays a ruler line. Only the
+    hand face (bow=True) resamples it with interior points that deviate
+    from the endpoint chord."""
+    straight = script_strokes("l", SKELETONS["l"])[0]["pts"]
+    assert len(straight) == 2
+    stem = script_strokes("l", SKELETONS["l"], bow=True)[0]["pts"]
     assert len(stem) > 2
     (x0, y0), (x1, y1) = stem[0], stem[-1]
     mid = stem[len(stem) // 2]
     chord_x = x0 + (x1 - x0) * ((mid[1] - y0) / (y1 - y0))
     assert abs(mid[0] - chord_x) > 5
+
+
+def test_tail_is_flagged_and_excluded_from_spacing():
+    """The exit tail is the only stroke flagged "tail", and body_bounds
+    stops at the body's ink so the tail can overshoot the advance."""
+    strokes = script_strokes("n", SKELETONS["n"])
+    tails = [s for s in strokes if s.get("tail")]
+    assert len(tails) == 1 and tails[0] is strokes[-1]
+    x_min, x_max = body_bounds(strokes)
+    tail_tip = max(x for x, _ in tails[0]["pts"])
+    assert tail_tip > x_max + 50
+    assert x_min < x_max
+    assert body_bounds(tails) is None
 
 
 @pytest.mark.parametrize("name", sorted("bdhkl"))

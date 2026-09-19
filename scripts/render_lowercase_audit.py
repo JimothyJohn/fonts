@@ -50,7 +50,7 @@ def main():
             )
         sans, _ = GLYPHS[ch]()
         script, _ = SCRIPT_GLYPHS[ch]()
-        hand = hand_contours(script_strokes(ch, SKELETONS[ch]), _rng(ch, 0))
+        hand = hand_contours(script_strokes(ch, SKELETONS[ch], bow=True), _rng(ch, 0))
         for col_i, contours in enumerate([sans, script, hand]):
             draw_contours(draw, contours, 90 + col_i * CELL + 20, baseline)
 
