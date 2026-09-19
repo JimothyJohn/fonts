@@ -135,7 +135,7 @@ def _bulge_bowl(stem_x, y_bottom, y_top, bulge_r, bulge, width_ratio=BOWL_WIDTH_
 
 def _stem_bowl(stem_x, stem_top, stem_bottom, bowl_cy, bowl_r, bulge):
     """A vertical stem with a full round bowl beside it -- the shared
-    skeleton behind b/d/p/q (and g), the same construction as a: the
+    skeleton behind b/d/p/q (g inlines it), the same construction as a: the
     bowl is o's ring, and the stem runs tangent to it through its
     centerline, so the arc meets the stem at the HORIZONTAL midline with
     a vertical tangent. The old half-ellipse instead had its two ends
@@ -455,7 +455,13 @@ def glyph_U(L=90, R=590, T=CAP):
 
 
 def glyph_D(L=70, T=CAP, B=BASE):
-    shapes = _stem_bowl(L, T, B, MID, CAP_CURVE_R, "right")
+    # A cap D keeps the bulge bowl (its ends land on the stem at cap and
+    # base, as in B/P/R): the ring-against-stem construction is a
+    # lowercase idea (a/b/d/p/q/g).
+    shapes = [
+        _chain([(L, B), (L, T)]),
+        _bulge_bowl(L, BASE_CURVE, CAP_CURVE, CAP_CURVE_R, "right"),
+    ]
     terminals = [((L, T), (L, B)), ((L, B), (L, T))]
     return shapes, 540, terminals
 
