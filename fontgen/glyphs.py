@@ -92,9 +92,14 @@ def _lerp(a, b, t):
 # it at 150. Everything else is weight-agnostic geometry.
 HOOK_GAP = 30
 
-#: Where g's descender hook stops (degrees; 0 is at the stem, -90 the
-#: bottom of the curl, -180 pointing straight back left).
-G_HOOK_END = -172
+#: g's descender: the hook's radius (wide enough that the tail sweeps
+#: under most of the bowl, the single-storey g's full under-curve, not a
+#: small cup) and where it stops (degrees; 0 is at the stem, -90 the
+#: bottom of the curl, -180 pointing straight back left). It stops well
+#: short of horizontal so its free end keeps air from the bowl's
+#: underside, which at this radius is directly above it.
+G_HOOK_R = 180
+G_HOOK_END = -150
 
 
 def _asin_deg(x):
@@ -418,10 +423,14 @@ def glyph_C():
 
 def glyph_G():
     cx, cy, r = 360, MID, CAP_CURVE_R
-    # Gap sits above the midline (not straddling it) so the ring still has
-    # ink exactly at y=cy on the right, where the crossbar needs to connect.
+    # The arc ends exactly at the midline (360), where the bar meets it:
+    # the arc's round end cap and the bar's round end cap are then the
+    # same disc, centered on (cx + r, cy), so the corner is one smooth
+    # curve tangent to the ring's outer edge. Running the arc 10 degrees
+    # past the bar (the old 370) left its cap poking 45 units above the
+    # bar's top edge as a wart on every face.
     shapes = [
-        _bowl(cx, cy, r, 50, 370, cap_style="round"),
+        _bowl(cx, cy, r, 50, 360, cap_style="round"),
         # Ends flush with the ring's centerline -- its own round cap
         # already reaches the ring's outer edge, so overshooting past r
         # poked a visible "nipple" out past the boundary.
@@ -803,14 +812,12 @@ def glyph_q_lc():
 
 def glyph_g_lc(pen=STROKE):
     # q's construction (ring bowl, stem tangent at the right) with the
-    # descender curling into a hook instead of running straight down.
-    # The hook is a shepherd's crook that stops at G_HOOK_END, just short
-    # of pointing straight left: the old -190 sweep carried the free end
-    # past horizontal and back up toward the bowl, a curl rather than a
-    # tail.
+    # descender curling into a wide hook instead of running straight
+    # down: from the stem's foot just under the baseline, around the
+    # descender line, and back up to G_HOOK_END under the bowl's left.
     stem_x = 420
     bowl_r = LOWER_CURVE_R
-    hook_r = 125
+    hook_r = G_HOOK_R
     hook_cy = DESCENT_CURVE + hook_r
     shapes = [
         _chain([(stem_x, hook_cy - 5), (stem_x, X_HEIGHT)]),

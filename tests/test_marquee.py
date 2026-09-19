@@ -40,15 +40,19 @@ def test_bulbs_never_stack():
         centers = [(s.centroid.x, s.centroid.y) for s in shapes]
         for i, a in enumerate(centers):
             for b in centers[i + 1 :]:
-                # Scatter jitter moves centers a few units after the
-                # dedupe check, so allow it on top of MIN_SEP.
-                assert math.dist(a, b) > MIN_SEP - 12
+                assert math.dist(a, b) >= MIN_SEP - 1e-6
 
 
-def test_period_is_one_solid_bulb():
-    # A burnt-out (ring) period would read as a degree sign.
+def test_every_bulb_is_a_ring():
+    # Stroked circles: each bulb has a rim and a white interior, the
+    # period included (one outer contour plus one hole).
     contours, _ = GLYPHS["period"]()
-    assert len(contours) == 1
+    assert len(contours) == 2
+    shapes, _ = marquee_shapes("I", SKELETONS["I"])
+    assert all(len(shape.interiors) == 1 for shape in shapes)
+    for shape in shapes:
+        hole = shape.interiors[0]
+        assert 0 < hole.length < shape.exterior.length
 
 
 def test_builds_are_deterministic():

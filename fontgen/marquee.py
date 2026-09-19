@@ -9,44 +9,37 @@ displayed as dots.
 
 Details that keep it signage rather than mush:
 
+- Every bulb is a RING: a black rim around a white interior, a stroked
+  circle rather than a filled one, so a run of them reads as glass
+  bulbs instead of a dotted line.
 - Bulbs land ON stroke endpoints (a stem gets a bulb exactly at its
   top and foot), with the interior spaced evenly between them, so
   letters keep their full intended extent.
 - Junction dedupe: where strokes meet (T-joins, bowl-to-stem), two
   bulbs would stack into a blob; any bulb landing too close to an
   already-placed one is skipped.
-- A seeded fraction of bulbs are "burnt out" -- drawn as rings instead
-  of discs -- which is what makes it signage instead of a dotted line.
 - The skeletons' own dots (i/j dots, period, colon) become single
   slightly-larger bulbs.
 
-All variation (burnt-out picks, bulb size and placement jitter) is
-seeded from glyph/stroke names via zlib.crc32, so builds stay
-byte-identical, matching the other faces.
+Nothing is randomized: the face is typeset, every letter the same
+string of bulbs every time.
 """
 
 import itertools
 import math
-import zlib
 
 from shapely import geometry as sg
 
 from fontgen.primitives import Point, finalize, record_strokes
 
-# Bulb geometry: disc radius, center-to-center pitch along the stroke,
-# and how close two bulbs may sit before the later one is skipped.
+# Bulb geometry: bulb radius, the rim's thickness (every bulb is a
+# ring -- black rim, white interior -- a stroked circle, not a filled
+# one), center-to-center pitch along the stroke, and how close two
+# bulbs may sit before the later one is skipped.
 BULB_R = 44.0
+RIM = 18.0
 PITCH = 96.0
 MIN_SEP = 0.75 * PITCH
-
-# Burnt-out bulbs: fraction drawn as rings, and the ring's inner radius
-# relative to the bulb.
-BURNT_FRACTION = 0.15
-RING_INNER = 0.52
-
-# Humanizing jitter, seeded: bulb radius drift and center scatter.
-RADIUS_VAR = 0.10
-SCATTER = 5.0
 
 # A recorded stroke this short is one of the skeletons' own dots
 # (i's dot, the period); it becomes a single larger bulb.
@@ -54,10 +47,6 @@ DOT_MAX_LEN = 12.0
 DOT_BULB_SCALE = 1.15
 
 QUAD_SEGS = 16
-
-
-def _rand(key: str, lo: float, hi: float) -> float:
-    return lo + (hi - lo) * (zlib.crc32(key.encode()) / 0xFFFFFFFF)
 
 
 def _resample(pts: list[Point], closed: bool) -> list[Point]:
@@ -83,20 +72,12 @@ def _resample(pts: list[Point], closed: bool) -> list[Point]:
     return out
 
 
-def _bulb(name: str, index: int, center: Point, r: float, can_burn: bool = True):
-    """One bulb: a disc, or -- for the seeded burnt-out fraction -- a
-    ring. Structural bulbs (stroke endpoints, the skeletons' own dots)
-    never burn: a ring at a terminal reads as debris, and a burnt-out
-    period is a degree sign."""
-    r *= 1 + _rand(f"{name}:{index}:r", -RADIUS_VAR, RADIUS_VAR)
-    cx = center[0] + _rand(f"{name}:{index}:x", -SCATTER, SCATTER)
-    cy = center[1] + _rand(f"{name}:{index}:y", -SCATTER, SCATTER)
-    disc = sg.Point(cx, cy).buffer(r, quad_segs=QUAD_SEGS)
-    if can_burn and _rand(f"{name}:{index}:burnt", 0.0, 1.0) < BURNT_FRACTION:
-        return disc.difference(
-            sg.Point(cx, cy).buffer(r * RING_INNER, quad_segs=QUAD_SEGS)
-        )
-    return disc
+def _bulb(center: Point, r: float):
+    """One bulb: a ring of outer radius r and a RIM-thick wall."""
+    cx, cy = center
+    outer = sg.Point(cx, cy).buffer(r, quad_segs=QUAD_SEGS)
+    inner = sg.Point(cx, cy).buffer(max(r - RIM, 1.0), quad_segs=QUAD_SEGS)
+    return outer.difference(inner)
 
 
 def marquee_shapes(name: str, fn) -> tuple[list, float]:
@@ -105,7 +86,6 @@ def marquee_shapes(name: str, fn) -> tuple[list, float]:
         _, advance, _terminals = fn()
     placed: list[Point] = []
     shapes = []
-    index = 0
     for stroke in strokes:
         pts = [tuple(p) for p in stroke["pts"]]
         closed = stroke["closed"]
@@ -116,17 +96,13 @@ def marquee_shapes(name: str, fn) -> tuple[list, float]:
         path_len = sum(math.dist(a, b) for a, b in itertools.pairwise(pts))
         if len(pts) < 2 or path_len < DOT_MAX_LEN:
             centers, r = [pts[0]], (stroke["width"] / 2) * DOT_BULB_SCALE
-            is_dot = True
         else:
             centers, r = _resample(pts, closed), BULB_R
-            is_dot = False
-        for j, c in enumerate(centers):
+        for c in centers:
             if any(math.dist(c, p) < MIN_SEP for p in placed):
                 continue
             placed.append(c)
-            endpoint = not closed and j in (0, len(centers) - 1)
-            shapes.append(_bulb(name, index, c, r, can_burn=not (is_dot or endpoint)))
-            index += 1
+            shapes.append(_bulb(c, r))
     return shapes, advance
 
 
