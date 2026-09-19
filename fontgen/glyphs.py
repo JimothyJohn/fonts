@@ -92,6 +92,10 @@ def _lerp(a, b, t):
 # it at 150. Everything else is weight-agnostic geometry.
 HOOK_GAP = 30
 
+#: Where g's descender hook stops (degrees; 0 is at the stem, -90 the
+#: bottom of the curl, -180 pointing straight back left).
+G_HOOK_END = -172
+
 
 def _asin_deg(x):
     return math.degrees(math.asin(max(-1.0, min(1.0, x))))
@@ -130,45 +134,63 @@ def _bulge_bowl(stem_x, y_bottom, y_top, bulge_r, bulge, width_ratio=BOWL_WIDTH_
 
 
 def _stem_bowl(stem_x, stem_top, stem_bottom, bowl_cy, bowl_r, bulge):
-    """A vertical stem with a round bowl attached at one side -- the shared
-    skeleton behind b/d/p/q (and a's short-stem variant).
+    """A vertical stem with a full round bowl beside it -- the shared
+    skeleton behind b/d/p/q (and g), the same construction as a: the
+    bowl is o's ring, and the stem runs tangent to it through its
+    centerline, so the arc meets the stem at the HORIZONTAL midline with
+    a vertical tangent. The old half-ellipse instead had its two ends
+    land on the stem at x-height and baseline, arriving horizontally,
+    which read as a bowl cut off by the stem rather than a circle
+    resting against it. `bulge` says which side of the stem the ring
+    sits on.
     """
+    cx = stem_x + bowl_r if bulge == "right" else stem_x - bowl_r
     return [
         _chain([(stem_x, stem_bottom), (stem_x, stem_top)]),
-        _bulge_bowl(stem_x, bowl_cy - bowl_r, bowl_cy + bowl_r, bowl_r, bulge),
+        ring(cx, bowl_cy, bowl_r + STROKE / 2, bowl_r - STROKE / 2),
     ]
 
 
-def _s_curve(L, R, T, B):
-    """S's skeleton (also used for s, 5): two stacked elliptical arcs
-    sampled into ONE polyline, meeting tangentially at the waist.
+#: Angle (degrees, from vertical) at which each of S's two arcs hands
+#: off to the spine, and the fraction of the arcs' combined height the
+#: top one takes. The spine's slope follows from these and the width.
+SPINE_DEG = 35
+S_TOP_FRACTION = 0.47
+S_MOUTH_TOP = 35
+S_MOUTH_BOTTOM = -125
 
-    Earlier attempts, for the record: a right-angle zigzag read as
-    swastika-like at this weight; an eased sine gave the reverse-curve
-    handedness but its long straight waist crossing still read as a
-    lightning bolt; and two separately-stroked circles never joined
-    cleanly. The construction that works: the top arc's LOWEST point and
-    the bottom arc's HIGHEST point are the same point with the same
-    (horizontal) tangent, so sampling top-arc-then-bottom-arc into one
-    skeleton is smooth by construction. Handedness comes from sweep
-    direction: the top arc runs CCW from its upper-right mouth over the
-    top and down the left side to its bottom; the bottom arc continues
-    CW from its top down the right side and around, mouth at lower
-    left. Top slightly smaller than bottom, as in most S's.
+
+def _s_curve(L, R, T, B, spine_deg=SPINE_DEG):
+    """S's skeleton (also s): two elliptical arcs of the SAME aspect
+    ratio, one over the other, joined by a straight diagonal spine that
+    leaves each arc tangentially.
+
+    The previous construction stacked the two arcs so the top one's
+    lowest point WAS the bottom one's highest: tangent-continuous, but
+    the spine crossed the waist horizontally, so the letter read as two
+    C's piled up rather than one stroke. Here the top arc stops
+    `spine_deg` short of its bottom (heading down-right) and the bottom
+    arc starts `spine_deg` past its top (arriving from up-left); because
+    both ellipses share an aspect ratio, the two tangents there are
+    parallel, and the chord between the two points lies exactly along
+    them when the arcs' centers are (ry1 + ry2) / cos(spine) apart --
+    which is what sizes the arcs. Both arcs are centered on the same x,
+    so the top mouth and the bottom's belly share the right edge and
+    the top's back and the bottom mouth share the left, as in every S.
 
     T/B are the curve lines (CAP_CURVE/BASE_CURVE or their x-height
     counterparts): the spine's extremes land exactly on them.
     """
-    cx = (L + R) / 2
-    height = T - B
-    ry_top = height / 2 * 0.46
-    ry_bot = height / 2 - ry_top
-    rx_top = (R - L) / 2 * 0.82
-    rx_bot = (R - L) / 2 * 0.95
-    top = ellipse_pts(cx, T - ry_top, rx_top, ry_top, 35, 270)
-    bottom = ellipse_pts(cx, B + ry_bot, rx_bot, ry_bot, 90, -125)
-    skeleton = top + bottom[1:]
-    return [stroke_union([skeleton], STROKE, cap_style="round")]
+    alpha = math.radians(spine_deg)
+    sum_ry = (T - B) / (1 + 1 / math.cos(alpha))
+    ry_top = sum_ry * S_TOP_FRACTION
+    ry_bot = sum_ry - ry_top
+    aspect = (R - L) / sum_ry
+    rx_top, rx_bot = aspect * ry_top, aspect * ry_bot
+    cx = L + rx_top
+    top = ellipse_pts(cx, T - ry_top, rx_top, ry_top, S_MOUTH_TOP, 270 - spine_deg)
+    bottom = ellipse_pts(cx, B + ry_bot, rx_bot, ry_bot, 90 - spine_deg, S_MOUTH_BOTTOM)
+    return [stroke_union([top + bottom], STROKE, cap_style="round")]
 
 
 def _hook(stem_x, stem_top, hook_r, hook_cy, curl_end=-200):
@@ -774,27 +796,26 @@ def glyph_q_lc():
 
 
 def glyph_g_lc(pen=STROKE):
-    # Like q, but the descender curls into a hook instead of running
-    # straight down. The single stem chain spans from the hook all the way
-    # up to the bowl's own top point (not just to X_HEIGHT) so it closes
-    # the bowl's right side completely -- leaving it short of that point
-    # is what previously left the bowl open at the upper right.
+    # q's construction (ring bowl, stem tangent at the right) with the
+    # descender curling into a hook instead of running straight down.
+    # The hook is a shepherd's crook that stops at G_HOOK_END, just short
+    # of pointing straight left: the old -190 sweep carried the free end
+    # past horizontal and back up toward the bowl, a curl rather than a
+    # tail.
     stem_x = 420
     bowl_r = LOWER_CURVE_R
-    y_top = XMID + bowl_r
-    y_bottom = XMID - bowl_r
-    # A fuller hook than j's (bigger radius) so the descender reads as
-    # g's under-loop rather than a clipped flick -- but only slightly
-    # further back up (-190): the old -240 sweep curled the free end up
-    # past the baseline into the bowl's underside, tangling the two into
-    # a spiral.
     hook_r = 125
     hook_cy = DESCENT_CURVE + hook_r
     shapes = [
-        _chain([(stem_x, hook_cy - 5), (stem_x, y_top)]),
-        _bulge_bowl(stem_x, y_bottom, y_top, bowl_r, "left"),
+        _chain([(stem_x, hook_cy - 5), (stem_x, X_HEIGHT)]),
+        ring(stem_x - bowl_r, XMID, LOWER_RING_R, LOWER_RING_R - STROKE),
         _bowl(
-            stem_x - hook_r, hook_cy, hook_r, 0, _curl_end(-190, pen), cap_style="round"
+            stem_x - hook_r,
+            hook_cy,
+            hook_r,
+            0,
+            _curl_end(G_HOOK_END, pen),
+            cap_style="round",
         ),
     ]
     return shapes, 540, []
@@ -810,15 +831,23 @@ def glyph_c_lc():
     return [_bowl(cx, cy, r, 40, 320, cap_style="round")], 500, []
 
 
-def glyph_e_lc():
+#: Where e's arc would like to end: sweeping on past the bottom to the
+#: lower right, so the tail comes back up toward the bar's end rather
+#: than stopping at five o'clock (the old 305 read as undershot).
+E_END = 332
+
+
+def glyph_e_lc(pen=STROKE):
     # A real e: the bar crosses at mid-height and meets the bowl exactly
     # where the arc starts (angle 0, right side), sealing the eye; the
     # arc sweeps over the top and around, leaving the aperture at the
-    # LOWER right (between 305 and 360 degrees) -- the previous version
-    # opened at mid-right, which read as a struck-through epsilon.
+    # lower right. The tail rises as far as E_END unless the pen is wide
+    # enough that it would close on the bar: then it stops where HOOK_GAP
+    # of air remains between the two.
     cx, cy, r = 260, XMID, LOWER_CURVE_R
+    end = min(E_END, 360 - _asin_deg((pen + HOOK_GAP) / r))
     shapes = [
-        _bowl(cx, cy, r, 0, 305, cap_style="round"),
+        _bowl(cx, cy, r, 0, end, cap_style="round"),
         _chain([(cx - r, cy), (cx + r, cy)]),
     ]
     return shapes, 500, []
@@ -977,6 +1006,11 @@ def glyph_l_lc():
 BAR_LEFT = 70
 BAR_RIGHT = 110
 
+#: f's flag: radius of the arc off the stem top, and the angle (degrees,
+#: 90 at the stem top, 0 pointing straight down) where its free end stops.
+F_HOOK_R = 140
+F_HOOK_END = 22
+
 
 def glyph_t_lc():
     stem_x = 170
@@ -993,19 +1027,17 @@ def glyph_t_lc():
 
 def glyph_f_lc(pen=STROKE):
     stem_x = 170
-    hook_r = 120
+    hook_r = F_HOOK_R
     hook_cy = CAP_CURVE - hook_r
     # A wider pen swallows the clearance between the hook's free end and
     # the crossbar; lift the end just enough to keep HOOK_GAP of air.
-    end = max(0.0, _asin_deg((X_HEIGHT + pen + HOOK_GAP - hook_cy) / hook_r))
-    # The hook is a quarter circle leaving the stem top tangentially (90)
-    # and ending pointing straight down (0), its free end well clear of
-    # the crossbar. The old 25..100 sweep at r=140 started 10 degrees
-    # PAST the stem top -- a nub poking out to the left of the stem in
-    # every face -- and stopped 25 degrees short of vertical, a flick
-    # rather than a hook; the smaller radius is what lets it complete the
-    # quarter turn without drooping onto the crossbar. The stem runs to
-    # the hook's own top (hook_cy + hook_r) so the two pieces overlap.
+    end = max(F_HOOK_END, _asin_deg((X_HEIGHT + pen + HOOK_GAP - hook_cy) / hook_r))
+    # The hook leaves the stem top tangentially (90) and sweeps right and
+    # down to F_HOOK_END: an open arc whose free end is still heading
+    # down-and-right, the way f's flag ends in a geometric sans. The old
+    # r=120 quarter circle finished pointing straight down, a tight
+    # candy-cane curl. The stem runs to the hook's own top (hook_cy +
+    # hook_r) so the two pieces overlap.
     shapes = [
         _chain([(stem_x, BASE), (stem_x, hook_cy + hook_r)]),
         _bowl(stem_x, hook_cy, hook_r, end, 90, cap_style="round"),

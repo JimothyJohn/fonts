@@ -35,7 +35,7 @@ re-inks the same skeletons under its own pen model.
   defaults; use `updateHead`/`_updateTableWithValues` for a field on a table
   already set up. `setupHead` after `setupGlyf` wipes the glyph bounds.
 - Skeletons that need air against their own strokes at heavy weights take a
-  `pen` kwarg (f, g, j). Add one rather than hard-coding clearances for the
+  `pen` kwarg (e, f, g, j). Add one rather than hard-coding clearances for the
   Regular pen.
 - Obliques are spaced and kerned as uprights, then sheared. Measuring bearings
   on a sheared glyph pads every advance by the slant's width.
