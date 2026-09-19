@@ -18,6 +18,7 @@ from fontgen.sans import (
     file_slug,
     make_glyphs,
     side_bearing,
+    slant,
     style_name,
     styles,
 )
@@ -29,6 +30,11 @@ def _poly(fn):
     return contours_to_polygon(fn()[0])
 
 
+def _style_glyphs(weight, italic):
+    glyphs = {name: fn() for name, fn in make_glyphs(weight).items()}
+    return slant(glyphs) if italic else glyphs
+
+
 def test_family_has_five_weights_upright_and_italic():
     assert len(STYLES) == 10
     assert STYLES[0] == ("Light", False)
@@ -37,10 +43,9 @@ def test_family_has_five_weights_upright_and_italic():
 
 @pytest.mark.parametrize("weight,italic", STYLES)
 def test_every_style_covers_the_full_skeleton_set(weight, italic):
-    glyphs = make_glyphs(weight, italic)
+    glyphs = _style_glyphs(weight, italic)
     assert set(glyphs) == set(GLYPHS)
-    for name, fn in glyphs.items():
-        contours, advance = fn()
+    for name, (contours, advance) in glyphs.items():
         assert advance > 0
         assert (len(contours) > 0) == (name != "space"), name
 
@@ -48,7 +53,7 @@ def test_every_style_covers_the_full_skeleton_set(weight, italic):
 def test_regular_upright_matches_the_sans_reference_glyphs():
     """Re-inking the recorded centerlines at STROKE reproduces GLYPHS;
     the only permitted difference is a buried bowl end's cap style."""
-    replay = make_glyphs("Regular", False)
+    replay = make_glyphs("Regular")
     for name in GLYPHS:
         if name == "space":
             continue
@@ -64,7 +69,7 @@ def test_stem_width_tracks_the_weight(name, y):
     arch: every segment is one stem, exactly the weight's pen wide."""
     widths = []
     for weight, (stroke, _) in WEIGHTS.items():
-        poly = _poly(make_glyphs(weight, False)[name])
+        poly = _poly(make_glyphs(weight)[name])
         cut = poly.intersection(LineString([(-1000, y), (2000, y)]))
         segments = list(cut.geoms) if hasattr(cut, "geoms") else [cut]
         for seg in segments:
@@ -79,8 +84,10 @@ def test_stem_width_tracks_the_weight(name, y):
 
 @pytest.mark.parametrize("weight", list(WEIGHTS))
 def test_italic_is_the_upright_sheared_by_the_italic_angle(weight):
-    up = _poly(make_glyphs(weight, False)["I"])
-    it = _poly(make_glyphs(weight, True)["I"])
+    upright = {"I": make_glyphs(weight)["I"]()}
+    up = contours_to_polygon(upright["I"][0])
+    it = contours_to_polygon(slant(upright)["I"][0])
+    assert slant(upright)["I"][1] == upright["I"][1]  # advances survive the shear
     # The lean shifts the cap-height end of the stem by tan(angle) * CAP.
     top_up = max(x for x, y in up.exterior.coords if y > CAP)
     top_it = max(x for x, y in it.exterior.coords if y > CAP)
@@ -96,7 +103,7 @@ def test_italic_is_the_upright_sheared_by_the_italic_angle(weight):
     "name", ["a", "e", "g", "B", "eight", "o", "d", "R", "six", "nine"]
 )
 def test_counters_stay_open_at_every_weight(weight, italic, name):
-    poly = _poly(make_glyphs(weight, italic)[name])
+    poly = contours_to_polygon(_style_glyphs(weight, italic)[name][0])
     parts = list(poly.geoms) if isinstance(poly, MultiPolygon) else [poly]
     holes = sum(len(p.interiors) for p in parts)
     assert holes >= 1, f"{name} lost its counter at {style_name(weight, italic)}"
@@ -107,7 +114,7 @@ def test_counters_stay_open_at_every_weight(weight, italic, name):
 def test_hooks_keep_air_from_their_own_strokes(weight, italic, name):
     """A free end that fuses into a neighbouring stroke at a heavy weight
     turns a hook into a blob -- the closed loop shows up as a hole."""
-    poly = _poly(make_glyphs(weight, italic)[name])
+    poly = contours_to_polygon(_style_glyphs(weight, italic)[name][0])
     parts = list(poly.geoms) if isinstance(poly, MultiPolygon) else [poly]
     expected = 1 if name in ("g", "e") else 0  # g's bowl and e's eye are real counters
     assert sum(len(p.interiors) for p in parts) == expected, (
@@ -145,8 +152,7 @@ def test_style_names_and_slugs():
 )
 def test_built_font_carries_style_metadata(tmp_path, weight, italic):
     glyphs = {".notdef": (finalize([rect(60, 0, 460, CAP)]), 520)}
-    for name, fn in make_glyphs(weight, italic).items():
-        glyphs[name] = fn()
+    glyphs.update(_style_glyphs(weight, italic))
     glyphs = normalize_spacing(glyphs, side_bearing=side_bearing(weight))
     path = tmp_path / "f.ttf"
     style = style_name(weight, italic)

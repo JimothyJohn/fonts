@@ -18,7 +18,8 @@ Two things the pen alone doesn't settle:
 - The obliques are true slanted romans, the geometric-sans convention
   (Futura, Century Gothic): no redrawn single-storey forms, just the
   upright letters leaned ITALIC_ANGLE degrees, sheared about y=0 so
-  everything on the baseline stays put.
+  everything on the baseline stays put -- after spacing and kerning, so
+  they keep the upright's advances and pairs.
 """
 
 import inspect
@@ -31,6 +32,7 @@ from fontgen.glyphs import SKELETONS
 from fontgen.metrics import SIDE_BEARING, STROKE
 from fontgen.primitives import (
     CURVE_SEGMENTS,
+    contours_to_polygon,
     polygon_to_contours,
     record_strokes,
     union_all,
@@ -139,9 +141,10 @@ def _ink(strokes, width_scale):
     return union_all(shapes)
 
 
-def make_glyphs(weight="Regular", italic=False):
-    """name -> () -> (contours, advance) for one family member -- the same
-    contract fontgen.glyphs.GLYPHS honors for the Regular."""
+def make_glyphs(weight="Regular"):
+    """name -> () -> (contours, advance) for one weight's UPRIGHT -- the
+    same contract fontgen.glyphs.GLYPHS honors for the Regular. Obliques
+    come from `slant`, applied after spacing."""
     stroke, _ = WEIGHTS[weight]
     k = stroke / STROKE
 
@@ -151,11 +154,26 @@ def make_glyphs(weight="Regular", italic=False):
         def glyph():
             with record_strokes() as strokes:
                 _shapes, advance, _terminals = fn(pen=stroke) if pen_aware else fn()
-            ink = _ink(strokes, k)
-            if italic:
-                ink = affinity.skew(ink, xs=ITALIC_ANGLE, origin=(0.0, 0.0))
-            return polygon_to_contours(ink), advance
+            return polygon_to_contours(_ink(strokes, k)), advance
 
         return glyph
 
     return {name: build(fn) for name, fn in SKELETONS.items()}
+
+
+def slant(glyphs):
+    """The oblique of a spaced {name: (contours, advance)} set: every
+    contour sheared ITALIC_ANGLE about the baseline, advances untouched.
+    Spacing is settled on the upright first because a sheared glyph's
+    bounding box is the slant's worth wider than its ink at any one
+    height; measuring bearings on it would pad every advance by that."""
+    slanted = {}
+    for name, (contours, advance) in glyphs.items():
+        if not contours:
+            slanted[name] = (contours, advance)
+            continue
+        geom = affinity.skew(
+            contours_to_polygon(contours), xs=ITALIC_ANGLE, origin=(0.0, 0.0)
+        )
+        slanted[name] = (polygon_to_contours(geom), advance)
+    return slanted

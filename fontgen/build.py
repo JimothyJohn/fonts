@@ -7,7 +7,7 @@ from fontTools.fontBuilder import FontBuilder
 from fontTools.misc.timeTools import epoch_diff
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 
-from fontgen.metrics import ASCENT, CAP, DESCENT, SIDE_BEARING, UPM, X_HEIGHT
+from fontgen.metrics import LINE_ASCENT, LINE_DESCENT, SIDE_BEARING, UPM
 from fontgen.primitives import Point
 
 #: head.created/modified for every build (seconds since the 1904 Mac
@@ -42,6 +42,34 @@ def normalize_spacing(
         new_advance = (x_max - x_min) + 2 * side_bearing
         normalized[name] = (shifted, new_advance)
     return normalized
+
+
+def normalize_baseline(
+    glyphs: dict[str, GlyphSpec], reference: str = "H"
+) -> dict[str, GlyphSpec]:
+    """Put the font's baseline where the flat strokes' ink ends.
+
+    The skeleton grid runs stem CENTERLINES along BASE/CAP, so a stem's
+    round cap dips half a pen below y=0 -- every straight letter would
+    sit below the line next to any other font. Shift the whole glyph set
+    up by the reference glyph's ink depth (H: two plain stems, no
+    overshoot) so flats sit exactly on y=0 and curves overshoot below it,
+    the way a font's baseline is meant to read. Faces with a wider pen
+    shift further; each face's own H decides.
+    """
+    if reference not in glyphs or not glyphs[reference][0]:
+        return glyphs
+    shift = -min(y for contour in glyphs[reference][0] for _, y in contour)
+    return {
+        name: ([[(x, y + shift) for x, y in c] for c in contours], advance)
+        for name, (contours, advance) in glyphs.items()
+    }
+
+
+def _ink_top(glyphs: dict[str, GlyphSpec], name: str, fallback: float) -> int:
+    if name not in glyphs or not glyphs[name][0]:
+        return round(fallback)
+    return round(max(y for contour in glyphs[name][0] for _, y in contour))
 
 
 def _draw_glyph(contours: list[list[Point]]):
@@ -80,6 +108,7 @@ def build_font(
     weight_class: int = 400,
     italic_angle: float = 0.0,
 ) -> None:
+    glyphs = normalize_baseline(glyphs)
     glyph_order = [".notdef"] + [n for n in glyphs if n != ".notdef"]
 
     fb = FontBuilder(unitsPerEm=UPM, isTTF=True)
@@ -96,7 +125,7 @@ def build_font(
         metrics[name] = (round(advance), lsb)
     fb.setupHorizontalMetrics(metrics)
 
-    fb.setupHorizontalHeader(ascent=ASCENT, descent=DESCENT)
+    fb.setupHorizontalHeader(ascent=LINE_ASCENT, descent=LINE_DESCENT)
     ps_name = f"{family_name}-{style_name}".replace(" ", "")
     full_name = f"{family_name} {style_name}"
     legacy_family, legacy_style = legacy_names(family_name, style_name)
@@ -121,13 +150,15 @@ def build_font(
     if not is_bold and not is_italic:
         fs_selection |= 0x40
     fb.setupOS2(
-        sTypoAscender=ASCENT,
-        sTypoDescender=DESCENT,
+        sTypoAscender=LINE_ASCENT,
+        sTypoDescender=LINE_DESCENT,
         sTypoLineGap=0,
-        usWinAscent=ASCENT,
-        usWinDescent=-DESCENT,
-        sCapHeight=round(CAP),
-        sxHeight=round(X_HEIGHT),
+        usWinAscent=LINE_ASCENT,
+        usWinDescent=-LINE_DESCENT,
+        # Measured from the (baseline-normalized) ink, so they mean what
+        # a renderer expects: where H's top and x's top actually are.
+        sCapHeight=_ink_top(glyphs, "H", LINE_ASCENT * 0.7),
+        sxHeight=_ink_top(glyphs, "x", LINE_ASCENT * 0.5),
         usWeightClass=weight_class,
         fsSelection=fs_selection,
     )
