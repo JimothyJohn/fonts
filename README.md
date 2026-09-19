@@ -106,3 +106,7 @@ Work happens on feature branches merged into `dev` by PR; CI runs lint,
 the test suite, and a full build of all seven faces on every PR, and green
 checks auto-merge. `master` is the published line: GitHub Pages serves the
 specimen site from `master:/docs`.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
