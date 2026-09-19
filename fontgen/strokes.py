@@ -22,7 +22,7 @@ from fontgen.build import normalize_spacing
 from fontgen.glyphs import CMAP, GLYPHS, SKELETONS
 from fontgen.metrics import ASCENT, DESCENT, SIDE_BEARING, UPM
 from fontgen.primitives import finalize, record_strokes, stroke_union
-from fontgen.script import script_strokes
+from fontgen.script import script_strokes, spacing_bounds
 
 Stroke = dict  # {"pts": [(x, y), ...], "width": float, "closed": bool}
 
@@ -33,16 +33,22 @@ def _spaced(
     recorded: dict[str, list[Stroke]],
     glyphs: dict,
     side_bearing: float,
+    spacing_bounds: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, dict]:
     """Shift each glyph's strokes to match normalize_spacing's side
-    bearings for the same contours; returns name -> {advance, strokes}."""
-    normalized = normalize_spacing(glyphs, side_bearing=side_bearing)
+    bearings for the same contours (measured from `spacing_bounds` where
+    given, as the script font does); returns name -> {advance, strokes}."""
+    normalized = normalize_spacing(
+        glyphs, side_bearing=side_bearing, spacing_bounds=spacing_bounds
+    )
     out = {}
     for name, (contours, advance) in normalized.items():
         strokes = recorded[name]
         if contours:
             raw_contours, _ = glyphs[name]
             x_min = min(x for c in raw_contours for x, _ in c)
+            if spacing_bounds and name in spacing_bounds:
+                x_min = spacing_bounds[name][0]
             shift = side_bearing - x_min
             strokes = [
                 {**s, "pts": [(x + shift, y) for x, y in s["pts"]]} for s in strokes
@@ -74,7 +80,7 @@ def script_glyph_strokes() -> dict[str, dict]:
         ]
         _, advance, _terminals = fn()
         glyphs[name] = (finalize(shapes), advance)
-    return _spaced(recorded, glyphs, SCRIPT_SIDE_BEARING)
+    return _spaced(recorded, glyphs, SCRIPT_SIDE_BEARING, spacing_bounds(SKELETONS))
 
 
 def _char_payload(by_name: dict[str, dict]) -> dict:

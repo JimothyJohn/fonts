@@ -30,8 +30,11 @@ SLANT = math.tan(math.radians(SLANT_DEG))
 
 # Cursive joins happen low, around a third of the x-height: the exit
 # tail ends at JOIN_Y, REACH to the right of the glyph's ink edge.
+# Spacing ignores the tail (see body_bounds), so the tip lands REACH
+# minus both letters' side bearings INSIDE the next letter's ink, where
+# it meets a stem or bowl instead of pointing at a gap.
 JOIN_Y = 160
-REACH = 170
+REACH = 150
 
 # Exit tails and loop up-strokes are drawn a touch lighter than the
 # main strokes, which reads as the pen easing off pressure.
@@ -70,9 +73,11 @@ ASC_CROSS_Y = X_HEIGHT * 0.58
 ASC_MIN_TOP = 660
 DESC_MAX_BOTTOM = -150
 
-# Naturalness: any long ruler-straight segment gets a subtle bow --
-# resampled with a one-hump perpendicular sine displacement, direction
-# chosen deterministically per (glyph, stroke) so builds are stable.
+# Naturalness, for the hand face only: any long ruler-straight segment
+# gets a subtle bow -- resampled with a one-hump perpendicular sine
+# displacement, direction chosen deterministically per (glyph, stroke)
+# so builds are stable. The script face sets its stems straight, like
+# every face but hand.
 BOW_MAX = 13
 BOW_MIN_LEN = 150
 
@@ -138,7 +143,12 @@ def _exit_tail(strokes: list[dict]) -> dict | None:
     c1 = (start[0] + span * 0.22, start[1] * 0.12)
     c2 = (end[0] - span * 0.30, JOIN_Y * 0.18)
     width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
-    return {"pts": _cubic(start, c1, c2, end), "width": width, "closed": False}
+    return {
+        "pts": _cubic(start, c1, c2, end),
+        "width": width,
+        "closed": False,
+        "tail": True,
+    }
 
 
 def _top_exit_tail(strokes: list[dict]) -> dict | None:
@@ -168,7 +178,12 @@ def _top_exit_tail(strokes: list[dict]) -> dict | None:
     c1 = (start[0] + span * 0.45, start[1] + 12)
     c2 = (end[0] - span * 0.3, end[1] + 30)
     width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
-    return {"pts": _cubic(start, c1, c2, end), "width": width, "closed": False}
+    return {
+        "pts": _cubic(start, c1, c2, end),
+        "width": width,
+        "closed": False,
+        "tail": True,
+    }
 
 
 def _vertical_stem(s: dict) -> bool:
@@ -238,10 +253,11 @@ def _slant(strokes: list[dict]) -> list[dict]:
     return [{**s, "pts": [(x + SLANT * y, y) for x, y in s["pts"]]} for s in strokes]
 
 
-def script_strokes(name: str, fn) -> list[dict]:
+def script_strokes(name: str, fn, bow: bool = False) -> list[dict]:
     """The script variant's pen strokes for one glyph: recorded skeleton,
-    plus cursive loops and exit tail for lowercase and a soft bow on
-    every long straight stroke, then slanted.
+    plus cursive loops and exit tail for lowercase (the tail stroke is
+    flagged "tail"), then slanted. `bow=True` (the hand face) first
+    gives every long straight stroke a soft bow.
     """
     with record_strokes() as strokes:
         fn()
@@ -255,7 +271,22 @@ def script_strokes(name: str, fn) -> list[dict]:
             tail = make_tail(strokes)
             if tail is not None:
                 strokes = strokes + [tail]
-    return _slant(_naturalize(name, strokes))
+    if bow:
+        strokes = _naturalize(name, strokes)
+    return _slant(strokes)
+
+
+def body_bounds(strokes: list[dict]) -> tuple[float, float] | None:
+    """The horizontal extent of a glyph's ink WITHOUT its exit tail: the
+    box its side bearings are measured from, so the tail is free to
+    overshoot the advance and land on the next letter. None when every
+    stroke is a tail (never, in practice) or there are no strokes."""
+    body = [s for s in strokes if not s.get("tail")]
+    if not body:
+        return None
+    x_min = min(x - s["width"] / 2 for s in body for x, _ in s["pts"])
+    x_max = max(x + s["width"] / 2 for s in body for x, _ in s["pts"])
+    return x_min, x_max
 
 
 def _build(name: str, fn):
@@ -268,6 +299,17 @@ def _build(name: str, fn):
         return finalize(shapes), advance
 
     return build
+
+
+def spacing_bounds(skeletons: dict) -> dict[str, tuple[float, float]]:
+    """name -> (x_min, x_max) of the tail-less ink for every glyph, to
+    hand to normalize_spacing so tails reach into the next letter."""
+    bounds = {}
+    for name, fn in skeletons.items():
+        b = body_bounds(script_strokes(name, fn))
+        if b is not None:
+            bounds[name] = b
+    return bounds
 
 
 def make_glyphs(skeletons: dict) -> dict:

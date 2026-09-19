@@ -11,6 +11,12 @@ them. That one rule turns O into a vertically-stressed didone O (thick
 sides, hairline top/bottom), makes crossbars and arms hairlines, and
 leaves stems at full display weight.
 
+A sampled curve is outlined as ONE smooth shape: the width is evaluated
+at every vertex and the two edges are offset from the centerline along
+the local normal, so the weight swells and thins continuously around a
+bowl with no facets. Straight authored chains are stroked segment by
+segment with mitered joints, the crisp corners a didone wants.
+
 Three typographic conventions the pure angle rule can't express are
 layered on top:
 
@@ -37,23 +43,14 @@ their own center so their outer edge still reaches the overshoot line
 the original round cap reached; without this, O renders 26 units
 shorter than H and every arch sits visibly low.
 
-On top of the drafted letterforms sits a deterministic humanizing layer
--- the difference between a didone ruled on a drafting table and one
-lettered by a steady hand. Every random choice is seeded from the glyph
-and stroke name (zlib.crc32, as in the script face's bows), so builds
-are reproducible: long straight segments bow a few units off true,
-stroke width breathes a few percent along the path and leans heavier
-toward the bottom (pen pressure), each glyph carries its own hairsbreadth
-of lean and weight, serif slabs and balls vary slightly in size, and a
-final morphological open/close pass melts every razor corner the way ink
-soaks into paper.
+Nothing is randomized and nothing is bowed or softened: the face is
+typeset, every letter the same drawing every time, sitting on the same
+baseline as every other face.
 """
 
 import itertools
 import math
-import zlib
 
-from shapely import affinity
 from shapely import geometry as sg
 from shapely.ops import unary_union
 
@@ -145,35 +142,10 @@ AXIS_TOL_DEG = 8.0
 # plain disc -- the angle model would flatten it into a hairline sliver.
 DOT_MAX_LEN = 12.0
 
-# ---- humanizing ------------------------------------------------------------
-# All variation is seeded from glyph/stroke names, so builds stay
-# byte-identical run to run.
-
-# Each glyph's overall weight drifts this fraction from nominal.
-GLYPH_WEIGHT_VAR = 0.03
-# Stroke width breathes this fraction along the path (one slow wave)...
-BREATH_AMP = 0.05
-# ...and leans this much heavier at the bottom of the stroke than the
-# top -- the way pen pressure settles as a hand pulls downward.
-TAPER_AMP = 0.045
-# Long straight segments bow off true by this many units (range), with
-# seeded direction, killing the ruler-drawn look without moving endpoints.
-BOW_AMP = (4.0, 9.0)
-BOW_MIN_LEN = 140.0
-BOW_SUBDIV = 8
-# Whole-glyph lean: a hairsbreadth of shear either way.
-SLANT_VAR = 0.012
-# Serif slabs and terminal balls each vary about this much in size.
-SERIF_VAR = 0.1
-BALL_VAR = 0.08
-# Radius of the final open/close pass that rounds every sharp corner --
-# the "ink on paper" softening.
-SOFTEN_R = 5.0
-
-
-def _rand(key: str, lo: float, hi: float) -> float:
-    """Deterministic uniform value in [lo, hi] from a string key."""
-    return lo + (hi - lo) * (zlib.crc32(key.encode()) / 0xFFFFFFFF)
+# A smooth outline's corner (where two consecutive sampled segments
+# meet) is mitered; the miter is capped at this multiple of the half
+# width so a kink can't throw a spike.
+MITER_CAP = 2.0
 
 
 def _fold_angle(dx: float, dy: float) -> float:
@@ -212,10 +184,11 @@ def _seg_widths(name: str, pts: list[Point], closed: bool, scale: float) -> list
 
 
 def _varwidth_shape(pts: list[Point], widths: list[float], closed: bool):
-    """Stroke a polyline with per-segment widths: one quad per segment,
-    plus a convex-hull filler over each joint so corners come out as
-    clean near-miters instead of the round bulges a disc join would add
-    (a disc at V's apex would dip half a stem-width past the baseline).
+    """Stroke a straight chain with per-segment widths: one quad per
+    segment, plus a convex-hull filler over each joint so corners come
+    out as clean near-miters instead of the round bulges a disc join
+    would add (a disc at V's apex would dip half a stem-width past the
+    baseline).
     """
     quads, ends = [], []
     n = len(pts)
@@ -265,6 +238,46 @@ def _varwidth_shape(pts: list[Point], widths: list[float], closed: bool):
     return unary_union(quads).buffer(0)
 
 
+def _smooth_shape(pts: list[Point], widths: list[float], closed: bool):
+    """Outline a sampled curve as one continuous shape: at every vertex
+    the width is the mean of its two segments' and the edge points are
+    offset along the mitered vertex normal, so the contrast modulates
+    smoothly along the path. A closed path yields the annulus between
+    its two offset loops; an open one is capped flat at both ends."""
+    n = len(pts)
+    segs = list(itertools.pairwise(pts))
+    if closed:
+        segs.append((pts[-1], pts[0]))
+    normals = []
+    for (x0, y0), (x1, y1) in segs:
+        dx, dy = x1 - x0, y1 - y0
+        length = math.hypot(dx, dy)
+        normals.append((-dy / length, dx / length) if length > 1e-9 else (0.0, 0.0))
+    left, right = [], []
+    for i in range(n):
+        if closed:
+            a, b = (i - 1) % n, i
+        else:
+            a, b = max(i - 1, 0), min(i, n - 2)
+        (nax, nay), (nbx, nby) = normals[a], normals[b]
+        mx, my = nax + nbx, nay + nby
+        m = math.hypot(mx, my)
+        if m < 1e-9:
+            mx, my, m = nbx, nby, 1.0
+        dot = max(-1.0, min(1.0, nax * nbx + nay * nby))
+        miter = min(1.0 / max(math.sqrt((1 + dot) / 2), 1e-6), MITER_CAP)
+        ux, uy = mx / m * miter, my / m * miter
+        h = (widths[a] + widths[b]) / 4
+        x, y = pts[i]
+        left.append((x + ux * h, y + uy * h))
+        right.append((x - ux * h, y - uy * h))
+    if closed:
+        outer = sg.Polygon(left).buffer(0)
+        inner = sg.Polygon(right).buffer(0)
+        return outer.symmetric_difference(inner).buffer(0)
+    return sg.Polygon(left + right[::-1]).buffer(0)
+
+
 def _path_length(pts: list[Point]) -> float:
     return sum(math.dist(a, b) for a, b in itertools.pairwise(pts))
 
@@ -293,60 +306,9 @@ def _y_stretch(pts: list[Point], closed: bool) -> list[Point]:
     return [(x, cy + (y - cy) * factor) for x, y in pts]
 
 
-def _humanize(name: str, si: int, pts: list[Point], widths: list[float], closed: bool):
-    """Give a drafted stroke a hand: bow long straight segments a few
-    units off true (subdividing them so the bow can curve), let the
-    width breathe gently along the path, and lean the weight toward the
-    bottom of the stroke. Endpoints never move, so joins, serifs and
-    ball placement stay exact."""
-    ys = [y for _, y in pts]
-    y_min, y_span = min(ys), max(max(ys) - min(ys), 1.0)
-    segs = list(itertools.pairwise(pts))
-    if closed:
-        segs.append((pts[-1], pts[0]))
-    total = max(sum(math.dist(a, b) for a, b in segs), 1.0)
-    phase = _rand(f"{name}:{si}:phase", 0.0, 1.0)
-    freq = _rand(f"{name}:{si}:freq", 0.7, 1.5)
-    straight = not closed and len(pts) <= STRAIGHT_MAX_PTS
-
-    def flow(w: float, y_mid: float, t: float) -> float:
-        breath = 1 + BREATH_AMP * math.sin(math.tau * (freq * t + phase))
-        taper = 1 + TAPER_AMP * (1 - 2 * (y_mid - y_min) / y_span)
-        return w * breath * taper
-
-    out_pts, out_w = [pts[0]], []
-    walked = 0.0
-    for k, ((x0, y0), (x1, y1)) in enumerate(segs):
-        seg_len = math.dist((x0, y0), (x1, y1))
-        w = widths[k]
-        if straight and seg_len > BOW_MIN_LEN:
-            sign = 1 if zlib.crc32(f"{name}:{si}:{k}".encode()) & 1 else -1
-            amp = sign * _rand(f"{name}:{si}:{k}:amp", *BOW_AMP)
-            nx, ny = -(y1 - y0) / seg_len, (x1 - x0) / seg_len
-            prev = 0.0
-            for j in range(1, BOW_SUBDIV + 1):
-                t = j / BOW_SUBDIV
-                bow = math.sin(math.pi * t) * amp
-                out_pts.append(
-                    (x0 + (x1 - x0) * t + nx * bow, y0 + (y1 - y0) * t + ny * bow)
-                )
-                mid = (prev + t) / 2
-                y_mid = y0 + (y1 - y0) * mid
-                out_w.append(flow(w, y_mid, (walked + seg_len * mid) / total))
-                prev = t
-        else:
-            # The wrap segment of a closed stroke ends back at pts[0],
-            # which is already in the list.
-            if not (closed and k == len(segs) - 1):
-                out_pts.append((x1, y1))
-            out_w.append(flow(w, (y0 + y1) / 2, (walked + seg_len / 2) / total))
-        walked += seg_len
-    return out_pts, out_w
-
-
-def _prepare(name: str, si: int, stroke: dict):
+def _prepare(name: str, stroke: dict):
     """One recorded stroke -> ("dot", disc) or ("stroke", (shape, pts,
-    widths)) after dedup, stretch, width assignment, and humanizing."""
+    widths, closed, is_curve)) after dedup, stretch and width assignment."""
     pts = [tuple(p) for p in stroke["pts"]]
     closed = stroke["closed"]
     if closed and len(pts) > 1 and math.dist(pts[0], pts[-1]) < 1e-6:
@@ -354,22 +316,17 @@ def _prepare(name: str, si: int, stroke: dict):
     if len(pts) < 2 or _path_length(pts) < DOT_MAX_LEN:
         r = stroke["width"] / 2
         return "dot", sg.Point(pts[0]).buffer(r, quad_segs=16)
-    # Decided before humanizing: a bowed stem gains points but must not
-    # start reading as a curve (balls belong on true curve ends only).
     is_curve = len(pts) >= CURVE_MIN_PTS
     if is_curve:
         pts = _y_stretch(pts, closed)
     scale = min(max(stroke["width"] / STROKE, 0.6), 1.5)
-    scale *= 1 + _rand(f"{name}:weight", -GLYPH_WEIGHT_VAR, GLYPH_WEIGHT_VAR)
     widths = _seg_widths(name, pts, closed, scale)
-    pts, widths = _humanize(name, si, pts, widths, closed)
-    return "stroke", (
-        _varwidth_shape(pts, widths, closed),
-        pts,
-        widths,
-        closed,
-        is_curve,
+    shape = (
+        _smooth_shape(pts, widths, closed)
+        if is_curve
+        else _varwidth_shape(pts, widths, closed)
     )
+    return "stroke", (shape, pts, widths, closed, is_curve)
 
 
 def _ball_shapes(name, prepared, ink, terminals):
@@ -415,36 +372,26 @@ def _ball_shapes(name, prepared, ink, terminals):
                 break
         else:
             merged.append(c)
-    return [
-        sg.Point(c).buffer(
-            BALL_R * (1 + _rand(f"{name}:ball:{i}", -BALL_VAR, BALL_VAR)),
-            quad_segs=16,
-        )
-        for i, c in enumerate(merged)
-    ]
+    return [sg.Point(c).buffer(BALL_R, quad_segs=16) for c in merged]
 
 
 def _serif_shapes(name, terminals):
     """Flat unbracketed slabs at every declared terminal: horizontal
     under vertical stems and diagonals (sitting exactly on the line the
-    stroke ends at), small vertical beaks on horizontal arm ends. Each
-    slab's size drifts a little, like individually drawn feet."""
+    stroke ends at), small vertical beaks on horizontal arm ends."""
     shapes = []
-    for i, ((px, py), (tx, ty)) in enumerate(terminals):
+    for (px, py), (tx, ty) in terminals:
         dx, dy = px - tx, py - ty
         angle = _fold_angle(dx, dy)
-        hw = SERIF_HW * (1 + _rand(f"{name}:serif:{i}:hw", -SERIF_VAR, SERIF_VAR))
-        th = SERIF_T * (1 + _rand(f"{name}:serif:{i}:t", -SERIF_VAR, SERIF_VAR))
         if angle <= AXIS_TOL_DEG:  # horizontal arm -> vertical beak
-            hh = ARM_HH * (1 + _rand(f"{name}:serif:{i}:hh", -SERIF_VAR, SERIF_VAR))
             if dx > 0:
-                shapes.append(sg.box(px - ARM_T, py - hh, px, py + hh))
+                shapes.append(sg.box(px - ARM_T, py - ARM_HH, px, py + ARM_HH))
             else:
-                shapes.append(sg.box(px, py - hh, px + ARM_T, py + hh))
+                shapes.append(sg.box(px, py - ARM_HH, px + ARM_T, py + ARM_HH))
         elif dy < 0:  # stem or diagonal ending downward -> foot slab
-            shapes.append(sg.box(px - hw, py, px + hw, py + th))
+            shapes.append(sg.box(px - SERIF_HW, py, px + SERIF_HW, py + SERIF_T))
         elif name not in TOP_SERIF_SKIP:  # ending upward -> head slab
-            shapes.append(sg.box(px - hw, py - th, px + hw, py))
+            shapes.append(sg.box(px - SERIF_HW, py - SERIF_T, px + SERIF_HW, py))
     return shapes
 
 
@@ -485,8 +432,8 @@ def moderne_shapes(name: str, fn) -> tuple[list, float]:
     if name in STROKE_OVERRIDES:
         strokes = STROKE_OVERRIDES[name]()
     dots, prepared = [], []
-    for si, s in enumerate(strokes):
-        kind, payload = _prepare(name, si, s)
+    for s in strokes:
+        kind, payload = _prepare(name, s)
         if kind == "dot":
             dots.append(payload)
         else:
@@ -501,19 +448,7 @@ def moderne_shapes(name: str, fn) -> tuple[list, float]:
 def _build(name: str, fn):
     def build():
         shapes, advance = moderne_shapes(name, fn)
-        geom = union_all(shapes)
-        # The last humanizing touches happen on the assembled letter:
-        # a hairsbreadth of per-glyph lean, then an open/close pass that
-        # rounds every sharp corner -- serif edges, miter joints, ball
-        # junctions -- the way ink spreads at a nib's turn.
-        slant = _rand(f"{name}:lean", -SLANT_VAR, SLANT_VAR)
-        geom = affinity.affine_transform(geom, [1, slant, 0, 1, 0, 0])
-        geom = (
-            geom.buffer(SOFTEN_R, quad_segs=4)
-            .buffer(-2 * SOFTEN_R, quad_segs=4)
-            .buffer(SOFTEN_R, quad_segs=4)
-        )
-        return polygon_to_contours(geom), advance
+        return polygon_to_contours(union_all(shapes).buffer(0)), advance
 
     return build
 
