@@ -5,19 +5,20 @@ drawn.
 Three layers separate this from the script face's tidy geometry:
 
 1. Variable-pressure ink. Strokes are not buffered at constant width:
-   each pen path is resampled densely and inked as a chain of discs
-   whose radius follows a pressure model -- heavier on downstrokes,
-   lighter on upstrokes (how a right-handed pen loads the nib), tapered
-   in and out at stroke ends (pen landing and lifting), with a slow
-   pressure drift along the path. No two millimeters of a stroke have
-   exactly the same weight.
+   each pen path is resampled densely and outlined as one smooth
+   variable-width shape (primitives.varwidth_outline) whose width
+   follows a pressure model -- clearly heavier on downstrokes, lighter
+   on upstrokes (how a right-handed pen loads the nib), tapered in and
+   out at stroke ends (pen landing and lifting), with a slow pressure
+   drift along the path. The weight swells and thins continuously; the
+   edges themselves stay smooth.
 
-2. Hand wobble. Every path is displaced by two low-frequency harmonics
-   plus a fine tremor, perpendicular to travel -- closed loops use
-   whole-period harmonics so the seam stays smooth. On top, each
-   variant of each glyph gets its own tilt, x/y squash, extra shear,
-   and baseline drift, so letters sit on the line the way handwriting
-   does: not quite.
+2. Hand wobble. Every path is displaced by two LONG, gentle harmonics
+   perpendicular to travel -- a stem bows, it does not shiver; there is
+   no tremor -- and closed loops use whole-period harmonics so the seam
+   stays smooth. On top, each variant of each glyph gets its own slight
+   tilt, x/y squash, extra shear, and baseline drift, so letters sit on
+   the line the way handwriting does: not quite.
 
 3. Per-occurrence variation. Every glyph is generated NUM_VARIANTS
    times from different deterministic seeds and wired up with an
@@ -38,33 +39,34 @@ import zlib
 from shapely import geometry as sg
 from shapely.ops import unary_union
 
-from fontgen.primitives import Point, polygon_to_contours
+from fontgen.primitives import Point, polygon_to_contours, varwidth_outline
 
 NUM_VARIANTS = 3
 
 # Path sampling / ink
-STEP = 13  # resample spacing along the pen path, font units
-MIN_INK_WIDTH = 24
+STEP = 10  # resample spacing along the pen path, font units
+MIN_INK_WIDTH = 26
 DOT_LENGTH = 40  # paths shorter than this are inked as a single dot
+QUAD_SEGS = 16
 
-# Pressure model
-DOWN_BIAS = 0.11  # downstrokes heavier, upstrokes lighter, by this fraction
-TAPER_LEN = 70  # entry/exit taper distance
-TAPER_FLOOR = 0.62  # pen-down / pen-up width fraction at the very tip
-DRIFT_AMP = 0.07  # slow pressure drift amplitude
-DRIFT_WAVELENGTH = 320
+# Pressure model: a wide, legible range of weight along every stroke.
+DOWN_BIAS = 0.3  # downstrokes heavier, upstrokes lighter, by this fraction
+TAPER_LEN = 130  # entry/exit taper distance
+TAPER_FLOOR = 0.5  # pen-down / pen-up width fraction at the very tip
+DRIFT_AMP = 0.12  # slow pressure drift amplitude
+DRIFT_WAVELENGTH = 520
 
-# Wobble model
-WOBBLE_WAVELENGTH = (260, 520)
-WOBBLE_AMP = (3.5, 8.0)
-TREMOR_WAVELENGTH = 48
-TREMOR_AMP = 1.6
+# Wobble model: two harmonics long enough that a stem carries at most
+# one gentle bow. (An earlier 48-unit tremor plus 260-520 wavelengths
+# read as a shaking hand.)
+WOBBLE_WAVELENGTH = (700, 1400)
+WOBBLE_AMP = (3.0, 6.5)
 
 # Per-variant frame jiggle
-MAX_TILT_DEG = 1.4
-MAX_SQUASH = 0.035
-MAX_EXTRA_SHEAR = 0.014
-MAX_BASELINE_DRIFT = 10.0
+MAX_TILT_DEG = 0.9
+MAX_SQUASH = 0.03
+MAX_EXTRA_SHEAR = 0.012
+MAX_BASELINE_DRIFT = 6.0
 
 
 def _rng(name: str, variant: int) -> random.Random:
@@ -114,16 +116,15 @@ def _tangents(pts: list[Point], closed: bool) -> list[Point]:
 def _wobble(
     pts: list[Point], s: list[float], total: float, closed: bool, rng: random.Random
 ) -> list[Point]:
-    """Perpendicular displacement: two low-frequency harmonics plus a
-    fine tremor. Closed paths snap each harmonic to a whole number of
-    periods so the displacement is continuous across the seam."""
+    """Perpendicular displacement: two long, gentle harmonics. Closed
+    paths snap each harmonic to a whole number of periods so the
+    displacement is continuous across the seam."""
     waves = []
     for _ in range(2):
         wavelength = rng.uniform(*WOBBLE_WAVELENGTH)
         amp = rng.uniform(*WOBBLE_AMP)
         phase = rng.uniform(0, 2 * math.pi)
         waves.append((wavelength, amp, phase))
-    waves.append((TREMOR_WAVELENGTH, TREMOR_AMP, rng.uniform(0, 2 * math.pi)))
 
     tangents = _tangents(pts, closed)
     out = []
@@ -200,12 +201,20 @@ def _ink_stroke(s: dict, rng: random.Random):
     if total < DOT_LENGTH:
         mx = sum(x for x, _ in pts) / len(pts)
         my = sum(y for _, y in pts) / len(pts)
-        return sg.Point(mx, my).buffer(s["width"] / 2, quad_segs=8)
+        return sg.Point(mx, my).buffer(s["width"] / 2, quad_segs=QUAD_SEGS)
+    if s["closed"]:
+        rpts, arcs = rpts[:-1], arcs[:-1]  # the wrap point is pts[0] again
     rpts = _wobble(rpts, arcs, total, s["closed"], rng)
     tangents = _tangents(rpts, s["closed"])
     widths = _pressure_widths(s["width"], arcs, total, tangents, s["closed"], rng)
-    return unary_union(
-        [sg.Point(x, y).buffer(w / 2, quad_segs=8) for (x, y), w in zip(rpts, widths)]
+    # Per-vertex pressure -> per-segment widths for the outline.
+    n = len(rpts)
+    pairs = list(zip(range(n), range(1, n))) + ([(n - 1, 0)] if s["closed"] else [])
+    seg_widths = [(widths[i] + widths[j]) / 2 for i, j in pairs]
+    # miter_cap=1 bevels each corner so the round join's disc, not a
+    # miter spike, defines the apex.
+    return varwidth_outline(
+        rpts, seg_widths, s["closed"], miter_cap=1.0, round_caps=True, round_joins=True
     )
 
 
@@ -238,5 +247,5 @@ def hand_contours(strokes: list[dict], rng: random.Random) -> list[list[Point]]:
     if not strokes:
         return []
     strokes = _frame_jiggle(strokes, rng)
-    shape = unary_union([_ink_stroke(s, rng) for s in strokes]).simplify(1.2)
+    shape = unary_union([_ink_stroke(s, rng) for s in strokes])
     return polygon_to_contours(shape)
