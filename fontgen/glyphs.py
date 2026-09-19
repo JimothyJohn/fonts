@@ -34,20 +34,40 @@ from fontgen.primitives import (
     ellipse_band,
     ellipse_pts,
     finalize,
-    rect,
     ring,
     stroke_union,
 )
 
-# Full circular glyphs (O, C, G, Q, zero) are tangent to CAP/BASE at this
-# outer radius, sized so they overshoot the flat cap-height/baseline by
-# OVERSHOOT -- without it, round shapes look optically smaller than
-# flat-topped letters at the same nominal height.
-RING_R = (CAP - BASE) / 2 + OVERSHOOT
+# Where a CURVE's centerline reaches at each guideline.
+#
+# A straight stroke is authored with its centerline ON the guideline, and
+# its round cap carries the ink STROKE/2 past it -- so the flat letters'
+# ink actually spans BASE - STROKE/2 .. CAP + STROKE/2. Curves are the
+# shapes that need optical overshoot past THAT ink (a round extreme that
+# stops level with a flat top looks smaller), so a curve's centerline
+# overshoots the guideline by OVERSHOOT, and the resulting ink overshoots
+# the flats by the same amount. Every bowl, ring, arch, hook and spine is
+# authored against these four lines, never against CAP/BASE/X_HEIGHT/
+# DESCENT directly: a curve tangent to the bare guideline comes out
+# STROKE/2 SHORT of the flats, and a ring whose OUTER edge is placed at
+# the guideline (how O/o/0/6/8/9 used to be sized) comes out STROKE/2 +
+# OVERSHOOT short -- the O visibly smaller than the H beside it, the 8
+# floating 69 units above the other digits' feet, in every face.
+LOWER_OVERSHOOT = 10
+CAP_CURVE = CAP + OVERSHOOT
+BASE_CURVE = BASE - OVERSHOOT
+X_CURVE = X_HEIGHT + LOWER_OVERSHOOT
+BASE_CURVE_LC = BASE - LOWER_OVERSHOOT
+DESCENT_CURVE = DESCENT - LOWER_OVERSHOOT
+
+# Full-height circles (O, C, G, Q, zero): centerline radius, and the
+# ring's outer radius for the annulus primitive.
+CAP_CURVE_R = (CAP_CURVE - BASE_CURVE) / 2
+RING_R = CAP_CURVE_R + STROKE / 2
 
 # Same idea, one size down, for x-height bowls (a, b, c, d, e, g, o, p, q).
-LOWER_OVERSHOOT = 10
-LOWER_RING_R = X_HEIGHT / 2 + LOWER_OVERSHOOT
+LOWER_CURVE_R = (X_CURVE - BASE_CURVE_LC) / 2
+LOWER_RING_R = LOWER_CURVE_R + STROKE / 2
 XMID = X_HEIGHT / 2
 
 
@@ -114,16 +134,18 @@ def _s_curve(L, R, T, B):
     top and down the left side to its bottom; the bottom arc continues
     CW from its top down the right side and around, mouth at lower
     left. Top slightly smaller than bottom, as in most S's.
+
+    T/B are the curve lines (CAP_CURVE/BASE_CURVE or their x-height
+    counterparts): the spine's extremes land exactly on them.
     """
     cx = (L + R) / 2
-    margin = 12
-    height = (T - margin) - (B + margin)
+    height = T - B
     ry_top = height / 2 * 0.46
     ry_bot = height / 2 - ry_top
     rx_top = (R - L) / 2 * 0.82
     rx_bot = (R - L) / 2 * 0.95
-    top = ellipse_pts(cx, T - margin - ry_top, rx_top, ry_top, 35, 270)
-    bottom = ellipse_pts(cx, B + margin + ry_bot, rx_bot, ry_bot, 90, -125)
+    top = ellipse_pts(cx, T - ry_top, rx_top, ry_top, 35, 270)
+    bottom = ellipse_pts(cx, B + ry_bot, rx_bot, ry_bot, 90, -125)
     skeleton = top + bottom[1:]
     return [stroke_union([skeleton], STROKE, cap_style="round")]
 
@@ -149,7 +171,7 @@ def _hook(stem_x, stem_top, hook_r, hook_cy, curl_end=-200):
 def _arch(x0, x1, y_top, y_bottom, stem0_top=None, stem1_bottom=None):
     """n's skeleton: two legs joined by an arch across the top. Used
     directly for n and as the right-hand half of h (with a taller left
-    stem passed via stem0_top).
+    stem passed via stem0_top). y_top is the arch's curve line (X_CURVE).
 
     Legs stop at bowl_cy -- the height of the arch's own two endpoints --
     not y_top: y_top is the height of the arch's *peak*, in the middle,
@@ -172,7 +194,8 @@ def _arch(x0, x1, y_top, y_bottom, stem0_top=None, stem1_bottom=None):
 
 
 def _basin(x0, x1, y_top, y_bottom):
-    """u's skeleton: two legs joined by a bowl across the bottom."""
+    """u's skeleton: two legs joined by a bowl across the bottom. y_bottom
+    is the bowl's curve line (BASE_CURVE_LC)."""
     r = (x1 - x0) / 2
     bowl_cy = y_bottom + r
     return [
@@ -346,12 +369,12 @@ def glyph_O():
 
 
 def glyph_C():
-    cx, cy, r = 360, MID, RING_R - STROKE / 2
+    cx, cy, r = 360, MID, CAP_CURVE_R
     return [_bowl(cx, cy, r, 40, 320, cap_style="round")], 720, []
 
 
 def glyph_G():
-    cx, cy, r = 360, MID, RING_R - STROKE / 2
+    cx, cy, r = 360, MID, CAP_CURVE_R
     # Gap sits above the midline (not straddling it) so the ring still has
     # ink exactly at y=cy on the right, where the crossbar needs to connect.
     shapes = [
@@ -368,18 +391,18 @@ def glyph_Q():
     cx, cy, r_out = 360, MID, RING_R
     shapes = [
         ring(cx, cy, r_out, r_out - STROKE),
-        _chain([(cx + 90, cy - 150), (cx + 260, BASE - 60)], width=STROKE),
+        _chain([(cx + 90, cy - 150), (cx + 290, BASE - 80)], width=STROKE),
     ]
     return shapes, 720, []
 
 
-def glyph_S(L=90, R=550, T=CAP, B=BASE):
+def glyph_S(L=90, R=550, T=CAP_CURVE, B=BASE_CURVE):
     return _s_curve(L, R, T, B), 640, []
 
 
 def glyph_U(L=90, R=590, T=CAP):
-    bowl_cy = 250
     r = (R - L) / 2
+    bowl_cy = BASE_CURVE + r
     shapes = [
         _chain([(L, T), (L, bowl_cy)], [(R, T), (R, bowl_cy)]),
         _bowl((L + R) / 2, bowl_cy, r, 180, 360),
@@ -389,8 +412,7 @@ def glyph_U(L=90, R=590, T=CAP):
 
 
 def glyph_D(L=70, T=CAP, B=BASE):
-    r = (T - B) / 2
-    shapes = _stem_bowl(L, T, B, MID, r, "right")
+    shapes = _stem_bowl(L, T, B, MID, CAP_CURVE_R, "right")
     terminals = [((L, T), (L, B)), ((L, B), (L, T))]
     return shapes, 540, terminals
 
@@ -404,7 +426,7 @@ _PR_RX = 235 * BOWL_WIDTH_RATIO
 
 def glyph_P(L=70, T=CAP, B=BASE):
     ry = 185
-    cy = T - ry
+    cy = CAP_CURVE - ry
     shapes = [
         _chain([(L, B), (L, T)]),
         _bulge_bowl(L, cy - ry, cy + ry, ry, "right", width_ratio=_PR_RX / ry),
@@ -415,13 +437,14 @@ def glyph_P(L=70, T=CAP, B=BASE):
 
 def glyph_B(L=70, T=CAP, B=BASE):
     # Bottom bowl bigger than the top -- the reverse reads upside-down/goofy.
-    # r_bot = 350 - r_top keeps the two bowls meeting exactly, no gap/overlap.
-    # 150/200 rather than the old 120/230: a top bowl barely half the
-    # bottom's size read as a caricature in every face, not classic
-    # top-light asymmetry.
-    r_top, r_bot = 150, 200
-    cy_top = T - r_top
-    cy_bot = r_bot
+    # r_top + r_bot spans the full curve height so the two bowls meet
+    # exactly at the stem, no gap/overlap. ~43/57 rather than the old
+    # 120/230 split: a top bowl barely half the bottom's size read as a
+    # caricature in every face, not classic top-light asymmetry.
+    r_top = 157
+    r_bot = CAP_CURVE_R - r_top
+    cy_top = CAP_CURVE - r_top
+    cy_bot = BASE_CURVE + r_bot
     shapes = [
         _chain([(L, B), (L, T)]),
         _bulge_bowl(L, cy_top - r_top, cy_top + r_top, r_top, "right"),
@@ -433,7 +456,7 @@ def glyph_B(L=70, T=CAP, B=BASE):
 
 def glyph_R(L=70, T=CAP, B=BASE, R=580):
     ry = 185
-    cy = T - ry
+    cy = CAP_CURVE - ry
     shapes = [
         _chain([(L, B), (L, T)]),
         _bulge_bowl(L, cy - ry, cy + ry, ry, "right", width_ratio=_PR_RX / ry),
@@ -445,7 +468,7 @@ def glyph_R(L=70, T=CAP, B=BASE, R=580):
 
 def glyph_J(R=470, T=CAP):
     hook_r = 175
-    hook_cy = hook_r + 20
+    hook_cy = BASE_CURVE + hook_r
     shapes = _hook(R, T, hook_r, hook_cy)
     terminals = [((R, T), (R, hook_cy))]
     return shapes, 500, terminals
@@ -476,7 +499,7 @@ def glyph_two(L=80, R=560, T=CAP, B=BASE):
     # so the arc-to-diagonal joint is smooth instead of the elbow the
     # old three-piece 2 had. Base bar laid on separately.
     r = 175
-    cx, cy = (L + R) / 2, T - r
+    cx, cy = (L + R) / 2, CAP_CURVE - r
     spine = arc_pts(cx, cy, r, 150, -35) + [(L, B)]
     shapes = [
         stroke_union([spine], STROKE, cap_style="round"),
@@ -493,19 +516,21 @@ def glyph_three(L=150, R=620, T=CAP, B=BASE):
     # top arc back toward the upper left and the bottom arc toward the
     # lower left, the way a 3 is actually drawn. Bottom bowl a touch
     # bigger, matching B's top/bottom logic.
-    r_top, r_bot = 165, 175
+    r_top, r_bot = 170, 180
     cx = L + 10
     shapes = [
-        _bowl(cx, T - r_top, r_top, 125, -90, cap_style="round"),
-        _bowl(cx, r_bot, r_bot, 90, -125, cap_style="round"),
+        _bowl(cx, CAP_CURVE - r_top, r_top, 125, -90, cap_style="round"),
+        _bowl(cx, BASE_CURVE + r_bot, r_bot, 90, -125, cap_style="round"),
     ]
     return shapes, 660, []
 
 
 def glyph_four(L=70, R=590, T=CAP, B=BASE):
     midy = 260
+    # The bar runs on past the stem: stopping it flush at the stem closed
+    # the figure into a solid triangle-on-a-stick in every face.
     shapes = [
-        _chain([(R - 60, T), (L, midy), (R, midy)]),
+        _chain([(R - 60, T), (L, midy), (R + 60, midy)]),
         _chain([(R, T), (R, B)]),
     ]
     # No separate terminal for the diagonal's own top end -- it's only 60
@@ -525,7 +550,7 @@ def glyph_five(L=90, R=550, T=CAP, B=BASE):
     # the polyline itself, so no piece can drift out of tangency.
     stem_x = L + 40
     r = 190
-    cx, cy = (L + R) / 2 + 10, r + 15
+    cx, cy = (L + R) / 2 + 10, BASE_CURVE + r
     spine = [(R - 30, T), (stem_x, T), (stem_x, 350)] + arc_pts(cx, cy, r, 152, -115)
     shapes = [stroke_union([spine], STROKE, cap_style="round")]
     terminals = [((R - 30, T), (stem_x, T))]
@@ -545,10 +570,12 @@ def glyph_six(L=100, R=570, T=CAP, B=BASE):
     # against the tall neck.
     r_bowl = 190
     cx = (L + R) / 2
-    cy_bowl = r_bowl
+    cy_bowl = BASE_CURVE + r_bowl - STROKE / 2
     neck_x = cx - r_bowl + STROKE / 2
     rx, ry = 250, 215
-    neck = [(neck_x, cy_bowl)] + ellipse_pts(neck_x + rx, T - ry, rx, ry, 180, 65)
+    neck = [(neck_x, cy_bowl)] + ellipse_pts(
+        neck_x + rx, CAP_CURVE - ry, rx, ry, 180, 65
+    )
     shapes = [
         ring(cx, cy_bowl, r_bowl, r_bowl - STROKE),
         stroke_union([neck], STROKE, cap_style="round"),
@@ -563,10 +590,16 @@ def glyph_seven(L=80, R=580, T=CAP, B=BASE):
 
 
 def glyph_eight(L=80, R=580, T=CAP, B=BASE):
-    r_top, r_bot = 165, 175
+    # Rings sized so the figure's OUTER edges land on the curve lines like
+    # every other round: top ring at the cap, bottom ring filling whatever
+    # is left down to the baseline (overlapping the top one by 10, so the
+    # waist is one continuous X rather than two tangent circles).
+    r_top = 196
     cx = (L + R) / 2
-    cy_top = T - r_top
-    cy_bot = (cy_top - r_top) + 10 - r_bot
+    cy_top = CAP_CURVE + STROKE / 2 - r_top
+    waist = cy_top - r_top + 10
+    r_bot = (waist - (BASE_CURVE - STROKE / 2)) / 2
+    cy_bot = waist - r_bot
     shapes = [
         ring(cx, cy_top, r_top, r_top - STROKE),
         ring(cx, cy_bot, r_bot, r_bot - STROKE),
@@ -584,10 +617,12 @@ def glyph_nine(L=100, R=570, T=CAP, B=BASE):
     # match six.
     r_bowl = 190
     cx = (L + R) / 2
-    cy_bowl = T - r_bowl
+    cy_bowl = CAP_CURVE + STROKE / 2 - r_bowl
     neck_x = cx + r_bowl - STROKE / 2
     rx, ry = 250, 215
-    neck = [(neck_x, cy_bowl)] + ellipse_pts(neck_x - rx, B + ry, rx, ry, 0, -115)
+    neck = [(neck_x, cy_bowl)] + ellipse_pts(
+        neck_x - rx, BASE_CURVE + ry, rx, ry, 0, -115
+    )
     shapes = [
         ring(cx, cy_bowl, r_bowl, r_bowl - STROKE),
         stroke_union([neck], STROKE, cap_style="round"),
@@ -602,9 +637,14 @@ def glyph_space():
     return [], 320, []
 
 
+#: Dot marks (period, colon, exclam, question) are discs of the same
+#: radius as i/j's tittle -- one dot, every face; the old square period
+#: next to a round tittle read as two different fonts' punctuation.
+DOT_R = 45
+
+
 def glyph_period():
-    s = 90
-    return [rect(230, 0, 230 + s, s)], 420, []
+    return [disc(275, DOT_R, DOT_R)], 420, []
 
 
 def glyph_comma():
@@ -618,17 +658,15 @@ def glyph_hyphen():
 
 
 def glyph_colon():
-    s = 90
-    shapes = [rect(230, 120, 230 + s, 120 + s), rect(230, 380, 230 + s, 380 + s)]
+    shapes = [disc(275, 120 + DOT_R, DOT_R), disc(275, 380 + DOT_R, DOT_R)]
     return shapes, 420, []
 
 
 def glyph_exclam():
     x = 250
-    s = 90
     shapes = [
         _chain([(x, CAP), (x, 220)], width=STROKE),
-        rect(x - s / 2, 0, x + s / 2, s),
+        disc(x, DOT_R, DOT_R),
     ]
     terminals = [((x, CAP), (x, 220))]
     return shapes, 420, terminals
@@ -641,13 +679,12 @@ def glyph_question(L=90, R=530, T=CAP):
     # the nearly-closed circle over a hanging stem read as a qoppa.
     r = 150
     cx = (L + R) / 2
-    cy = T - r
+    cy = CAP_CURVE - r
     stem_bottom = 220
-    s = 90
     shapes = [
         _bowl(cx, cy, r, 175, -75, cap_style="round"),
         _chain([(cx, cy - r + 20), (cx, stem_bottom)]),
-        rect(cx - s / 2, 0, cx + s / 2, s),
+        disc(cx, DOT_R, DOT_R),
     ]
     return shapes, 620, []
 
@@ -662,11 +699,10 @@ def glyph_a_lc():
     # stem, and a half-disc with a bar down its flat side reads as a
     # mirrored D, not an a; keeping the counter fully round is what makes
     # the bowl read as a bowl.
-    r = LOWER_RING_R
     cx = 250
-    stem_x = cx + r - STROKE / 2
+    stem_x = cx + LOWER_CURVE_R
     shapes = [
-        ring(cx, XMID, r, r - STROKE),
+        ring(cx, XMID, LOWER_RING_R, LOWER_RING_R - STROKE),
         _chain([(stem_x, BASE), (stem_x, X_HEIGHT)]),
     ]
     terminals = [
@@ -681,14 +717,14 @@ def glyph_b_lc():
     # to have hovered clear of both the baseline and x-height, which read
     # as a thorn rather than a b.
     stem_x = 70
-    shapes = _stem_bowl(stem_x, CAP, BASE, XMID, LOWER_RING_R, "right")
+    shapes = _stem_bowl(stem_x, CAP, BASE, XMID, LOWER_CURVE_R, "right")
     terminals = [((stem_x, BASE), (stem_x, CAP)), ((stem_x, CAP), (stem_x, BASE))]
     return shapes, 540, terminals
 
 
 def glyph_d_lc():
     stem_x = 420
-    shapes = _stem_bowl(stem_x, CAP, BASE, XMID, LOWER_RING_R, "left")
+    shapes = _stem_bowl(stem_x, CAP, BASE, XMID, LOWER_CURVE_R, "left")
     terminals = [
         ((stem_x, CAP), (stem_x, BASE)),
         ((stem_x, BASE), (stem_x, CAP)),
@@ -698,7 +734,7 @@ def glyph_d_lc():
 
 def glyph_p_lc():
     stem_x = 70
-    shapes = _stem_bowl(stem_x, X_HEIGHT, DESCENT, XMID, LOWER_RING_R, "right")
+    shapes = _stem_bowl(stem_x, X_HEIGHT, DESCENT, XMID, LOWER_CURVE_R, "right")
     terminals = [
         ((stem_x, X_HEIGHT), (stem_x, DESCENT)),
         ((stem_x, DESCENT), (stem_x, X_HEIGHT)),
@@ -708,7 +744,7 @@ def glyph_p_lc():
 
 def glyph_q_lc():
     stem_x = 420
-    shapes = _stem_bowl(stem_x, X_HEIGHT, DESCENT, XMID, LOWER_RING_R, "left")
+    shapes = _stem_bowl(stem_x, X_HEIGHT, DESCENT, XMID, LOWER_CURVE_R, "left")
     terminals = [
         ((stem_x, X_HEIGHT), (stem_x, DESCENT)),
         ((stem_x, DESCENT), (stem_x, X_HEIGHT)),
@@ -723,7 +759,7 @@ def glyph_g_lc():
     # the bowl's right side completely -- leaving it short of that point
     # is what previously left the bowl open at the upper right.
     stem_x = 420
-    bowl_r = LOWER_RING_R
+    bowl_r = LOWER_CURVE_R
     y_top = XMID + bowl_r
     y_bottom = XMID - bowl_r
     # A fuller hook than j's (bigger radius) so the descender reads as
@@ -732,7 +768,7 @@ def glyph_g_lc():
     # past the baseline into the bowl's underside, tangling the two into
     # a spiral.
     hook_r = 125
-    hook_cy = DESCENT + hook_r
+    hook_cy = DESCENT_CURVE + hook_r
     shapes = [
         _chain([(stem_x, hook_cy - 5), (stem_x, y_top)]),
         _bulge_bowl(stem_x, y_bottom, y_top, bowl_r, "left"),
@@ -747,7 +783,7 @@ def glyph_o_lc():
 
 
 def glyph_c_lc():
-    cx, cy, r = 260, XMID, LOWER_RING_R - STROKE / 2
+    cx, cy, r = 260, XMID, LOWER_CURVE_R
     return [_bowl(cx, cy, r, 40, 320, cap_style="round")], 500, []
 
 
@@ -757,7 +793,7 @@ def glyph_e_lc():
     # arc sweeps over the top and around, leaving the aperture at the
     # LOWER right (between 305 and 360 degrees) -- the previous version
     # opened at mid-right, which read as a struck-through epsilon.
-    cx, cy, r = 260, XMID, LOWER_RING_R - STROKE / 2
+    cx, cy, r = 260, XMID, LOWER_CURVE_R
     shapes = [
         _bowl(cx, cy, r, 0, 305, cap_style="round"),
         _chain([(cx - r, cy), (cx + r, cy)]),
@@ -766,17 +802,17 @@ def glyph_e_lc():
 
 
 def glyph_s_lc(L=70, R=410):
-    return _s_curve(L, R, X_HEIGHT, BASE), 480, []
+    return _s_curve(L, R, X_CURVE, BASE_CURVE_LC), 480, []
 
 
 def glyph_n_lc(L=70, R=410):
-    shapes = _arch(L, R, X_HEIGHT, BASE)
+    shapes = _arch(L, R, X_CURVE, BASE)
     terminals = [((L, BASE), (L, X_HEIGHT)), ((R, BASE), (R, X_HEIGHT))]
     return shapes, 480, terminals
 
 
 def glyph_m_lc(x0=60, x1=300, x2=540):
-    shapes = _arch(x0, x1, X_HEIGHT, BASE) + _arch(x1, x2, X_HEIGHT, BASE)
+    shapes = _arch(x0, x1, X_CURVE, BASE) + _arch(x1, x2, X_CURVE, BASE)
     terminals = [
         ((x0, BASE), (x0, X_HEIGHT)),
         ((x1, BASE), (x1, X_HEIGHT)),
@@ -786,7 +822,7 @@ def glyph_m_lc(x0=60, x1=300, x2=540):
 
 
 def glyph_h_lc(L=70, R=410):
-    shapes = _arch(L, R, X_HEIGHT, BASE, stem0_top=CAP)
+    shapes = _arch(L, R, X_CURVE, BASE, stem0_top=CAP)
     terminals = [
         ((L, BASE), (L, CAP)),
         ((L, CAP), (L, BASE)),
@@ -796,7 +832,7 @@ def glyph_h_lc(L=70, R=410):
 
 
 def glyph_u_lc(L=70, R=410):
-    shapes = _basin(L, R, X_HEIGHT, BASE)
+    shapes = _basin(L, R, X_HEIGHT, BASE_CURVE_LC)
     terminals = [((L, X_HEIGHT), (L, BASE)), ((R, X_HEIGHT), (R, BASE))]
     return shapes, 480, terminals
 
@@ -810,7 +846,7 @@ def glyph_r_lc():
     arm_r = 150
     shapes = [
         _chain([(stem_x, BASE), (stem_x, X_HEIGHT)]),
-        _bowl(stem_x + arm_r, X_HEIGHT - arm_r, arm_r, 180, 15, cap_style="round"),
+        _bowl(stem_x + arm_r, X_CURVE - arm_r, arm_r, 180, 15, cap_style="round"),
     ]
     terminals = [((stem_x, BASE), (stem_x, X_HEIGHT))]
     return shapes, 460, terminals
@@ -845,13 +881,19 @@ def glyph_x_lc(L=70, R=410):
 
 
 def glyph_y_lc(L=70, R=410):
+    # v with its right arm carried straight on through the vertex to the
+    # descender: one unbroken diagonal from the upper right to the tail.
+    # The old form bent at a junction above the baseline, from the arm's
+    # slope to near-vertical, and that elbow made every face's y read as
+    # a Greek gamma -- a v with a stick hung under it.
     midx = (L + R) / 2
-    cross_y = 140
+    t = (X_HEIGHT - DESCENT) / (X_HEIGHT - BASE)
+    tail_x = _lerp(R, midx, t)
     shapes = [
-        _chain([(L, X_HEIGHT), (midx, cross_y)]),
-        _chain([(R, X_HEIGHT), (midx, cross_y), (midx - 50, DESCENT)]),
+        _chain([(L, X_HEIGHT), (midx, BASE)]),
+        _chain([(R, X_HEIGHT), (tail_x, DESCENT)]),
     ]
-    terminals = [((L, X_HEIGHT), (midx, cross_y)), ((R, X_HEIGHT), (midx, cross_y))]
+    terminals = [((L, X_HEIGHT), (midx, BASE)), ((R, X_HEIGHT), (tail_x, DESCENT))]
     return shapes, 480, terminals
 
 
@@ -890,7 +932,7 @@ def glyph_i_lc():
 def glyph_j_lc():
     stem_x = 250
     hook_r = 110
-    hook_cy = DESCENT + hook_r
+    hook_cy = DESCENT_CURVE + hook_r
     dot_cy = X_HEIGHT + 155
     shapes = [
         *_hook(stem_x, X_HEIGHT, hook_r, hook_cy),
@@ -905,12 +947,20 @@ def glyph_l_lc():
     return [_chain([(x, BASE), (x, CAP)])], 340, terminals
 
 
+#: t and f crossbars: short on the left, long on the right, as in every
+#: text face. A bar centered on the stem made both letters read as a
+#: dagger/cross, and set the two apart from the asymmetric arms of every
+#: other letter (E, F, r, ...) whose strokes reach rightward.
+BAR_LEFT = 70
+BAR_RIGHT = 110
+
+
 def glyph_t_lc():
     stem_x = 170
     top = 600
     shapes = [
         _chain([(stem_x, BASE), (stem_x, top)]),
-        _chain([(stem_x - 90, X_HEIGHT), (stem_x + 90, X_HEIGHT)]),
+        _chain([(stem_x - BAR_LEFT, X_HEIGHT), (stem_x + BAR_RIGHT, X_HEIGHT)]),
     ]
     # Only the foot gets a terminal: a serif on t's stem TOP (which stops
     # between x-height and cap, not on a guideline) read as a dagger.
@@ -920,17 +970,20 @@ def glyph_t_lc():
 
 def glyph_f_lc():
     stem_x = 170
-    hook_r = 140
-    hook_cy = CAP - hook_r
-    # Stem must reach the hook's top (hook_cy + hook_r), not just its arc
-    # center, or the two pieces don't overlap. The hook stays in the upper
-    # quadrant (25..100): sweeping on down to -15 made its free end droop
-    # level with -- and nearly touch -- the crossbar, closing the letter
-    # into a scythe.
+    hook_r = 120
+    hook_cy = CAP_CURVE - hook_r
+    # The hook is a quarter circle leaving the stem top tangentially (90)
+    # and ending pointing straight down (0), its free end well clear of
+    # the crossbar. The old 25..100 sweep at r=140 started 10 degrees
+    # PAST the stem top -- a nub poking out to the left of the stem in
+    # every face -- and stopped 25 degrees short of vertical, a flick
+    # rather than a hook; the smaller radius is what lets it complete the
+    # quarter turn without drooping onto the crossbar. The stem runs to
+    # the hook's own top (hook_cy + hook_r) so the two pieces overlap.
     shapes = [
         _chain([(stem_x, BASE), (stem_x, hook_cy + hook_r)]),
-        _bowl(stem_x, hook_cy, hook_r, 25, 100, cap_style="round"),
-        _chain([(stem_x - 90, X_HEIGHT), (stem_x + 90, X_HEIGHT)]),
+        _bowl(stem_x, hook_cy, hook_r, 0, 90, cap_style="round"),
+        _chain([(stem_x - BAR_LEFT, X_HEIGHT), (stem_x + BAR_RIGHT, X_HEIGHT)]),
     ]
     terminals = [((stem_x, BASE), (stem_x, hook_cy))]
     return shapes, 400, terminals

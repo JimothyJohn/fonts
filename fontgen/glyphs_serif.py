@@ -26,16 +26,12 @@ pen only ever widens things sideways.
 
 Two optical corrections ride along, both things a circular pen hid:
 
-- Closed rings (O, o, 0, 6, 8, 9, Q, a's bowl) are grown vertically by
-  RING_OVERSHOOT. Seriffed stems visually sit CAP_BULGE_V below the
-  nominal baseline (their feet swallow the pen cap there), so a ring
-  tangent to the nominal guidelines floats above the seriffed line;
-  round shapes must overshoot past it, not hover inside it.
-- Dot marks (i/j tittles, period, colon, exclam, question) are drawn as
-  true circles sized to the new stem weight -- the skeletons' square
-  dots read as foreign next to contrast strokes -- and dots that sit on
-  the baseline are dropped to the same optical line the serif feet
-  define.
+- Dot marks (i/j tittles, period, colon, exclam, question) are redrawn
+  as circles sized to the new stem weight, and dots that sit on the
+  baseline are dropped to the same optical line the serif feet define
+  (feet reach CAP_BULGE_V below nominal; the skeletons' curves already
+  overshoot the flats' ink by the same margin, so rings need no growth
+  of their own here).
 - Free CURVE ends grow ball terminals, the legibility group's signature
   finish (Century's c/r/f bulbs). A candidate is found structurally, not
   by name: an open recorded stroke with enough points to be a curve
@@ -49,7 +45,7 @@ import math
 from shapely import affinity
 from shapely.geometry import LinearRing, LineString, Point
 
-from fontgen.glyphs import CMAP, SKELETONS
+from fontgen.glyphs import BASE_CURVE_LC, CMAP, SKELETONS
 from fontgen.metrics import BASE, STROKE
 from fontgen.primitives import (
     disc,
@@ -61,12 +57,6 @@ from fontgen.primitives import (
     union_all,
 )
 from fontgen.serifs import PEN_THICK, PEN_THIN, serif_foot
-
-#: Extra vertical radius for closed rings, chosen so a capital ring's
-#: bottom edge lands ~10 units below the seriffed baseline (which sits
-#: CAP_BULGE_V below nominal): today's capital ring already overshoots
-#: nominal by 14, so 14 + grow = CAP_BULGE_V + 10.
-RING_OVERSHOOT = 35.0
 
 #: Dot radius: diameter ~= PEN_THICK, so a tittle reads as a full stop of
 #: the stem's own weight rather than a fleck.
@@ -98,15 +88,6 @@ def _pen_stroke(stroke):
 
     if closed:
         line = LinearRing(pts)
-        ys = [y for _, y in pts]
-        rv = (max(ys) - min(ys)) / 2
-        if rv > 1:
-            line = affinity.scale(
-                line,
-                xfact=1.0,
-                yfact=(rv + RING_OVERSHOOT) / rv,
-                origin=(0.0, (max(ys) + min(ys)) / 2),
-            )
     else:
         line = LineString(pts)
         if line.length < DOT_LEN:
@@ -172,8 +153,9 @@ def _skeleton_a():
     shapes = [
         stroke_union([[(stem_x, BASE), (stem_x, 350)]], STROKE),
         # Lower bowl: bulges left from the stem, spanning roughly the
-        # bottom 60% of the x-height.
-        ellipse_band(stem_x, 150, 250, 140, 90, 270, STROKE),
+        # bottom 60% of the x-height, its underside on the lowercase
+        # curve line like every other bowl's.
+        ellipse_band(stem_x, 140, 250, 140 - BASE_CURVE_LC, 90, 270, STROKE),
         # Hood: leaves the stem top at its own ellipse's 0-degree point,
         # arcs over tangent to x-height, and stops just past horizontal on
         # the left -- sweeping further down crowded its ball terminal into
