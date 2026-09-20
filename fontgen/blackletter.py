@@ -4,70 +4,57 @@ face generated from the same glyph skeletons as the sans.
 Where the moderne face models a pointed pen (width from pressure, so
 vertical strokes swell and horizontals vanish), this models the BROAD
 NIB that wrote medieval textura: a flat pen held at a constant
-NIB_DEG angle. A stroke's width is set by how much of the nib's edge
-it drags -- full width perpendicular to the nib, a hairline parallel
-to it. That one change gives thick verticals AND substantial
-horizontals, with the up-right diagonals (A's left leg, V's right, the
-rising strokes of x and W) collapsing to hairlines exactly where a
-scribe's pen would.
+NIB_DEG angle. Every recorded centerline is SWEPT with that nib -- the
+Minkowski sum of the path and a thin rectangle, built as the union of
+the convex hulls of the nib at each pair of consecutive path points --
+so a stroke's width is set purely by how much of the nib's edge it
+drags: full width perpendicular to the nib, a hairline (the nib's own
+thickness) along it, and every angle in between modulating
+continuously along a curve. That one rule gives thick verticals AND
+substantial horizontals, with the up-right diagonals (A's left leg,
+V's right, the rising strokes of x and W) collapsing to hairlines
+exactly where a scribe's pen would, and the nib's angled edge showing
+at every stroke end.
 
-Three blackletter conventions layered on the nib model:
+Two blackletter conventions layered on the nib model:
 
-- **Fracture.** Textura has no round bowls: curves break into short
-  straight strokes. Every sampled curve is Douglas-Peucker simplified
-  to a few segments before stroking, turning O into the angular
-  hexagonal ring and n's arch into a broken shoulder. (This is also why
-  no overshoot stretch is needed -- fractured letters are flat-topped.)
-- **Diamond nib-marks.** Where the didone grew slab serifs and balls,
-  the broad nib leaves a rhombus: every declared terminal gets a
-  nib-angled diamond whose tip pokes a touch past the line it sits on,
-  and free-hanging thin curve ends (c's mouth, g's tail, 3's spine) get
-  a smaller one. The dots of i, j, !, ? and the period become diamonds
+- **Verticalized diagonals.** Textura draws a long diagonal as a heavy
+  vertical run plus a short connector -- the picket-fence texture comes
+  from everything snapping to vertical. Long authored diagonals are
+  broken that way, anchored at their free end so feet and heads stay
+  where the letter needs them.
+- **Diamond nib-marks.** Every declared terminal gets a nib-angled
+  rhombus whose tip pokes a touch past the line it sits on, and
+  free-hanging thin curve ends (c's mouth, g's tail, 3's spine) get a
+  smaller one. The dots of i, j, !, ? and the period become diamonds
   outright, and the comma is a diamond with a hairline tail.
-- **Density.** Blackletter is set dark and tight; the build script
-  narrows the side bearings accordingly.
 
-The humanizing layer is inherited in spirit from the moderne but
-re-tuned: fractured segments must NOT be bowed back into curves, so
-only the width breathes (each facet cut slightly its own weight, the
-way no two pen strokes repeat), plus per-glyph weight and lean drift
-and the same ink-soak corner softening. All variation is seeded
-(zlib.crc32), so builds stay byte-identical.
+Curves are swept smooth, not fractured into facets, and nothing is
+randomized: the face is typeset, every letter the same drawing every
+time, and its baseline is the flats' ink like every other face's.
 """
 
 import itertools
 import math
 
-from shapely import affinity
 from shapely import geometry as sg
 from shapely.ops import unary_union
 
 from fontgen.metrics import STROKE
-from fontgen.moderne import (
-    SOFTEN_R,
-    STROKE_OVERRIDES,
-    _path_length,
-    _rand,
-    _varwidth_shape,
-)
 from fontgen.primitives import Point, polygon_to_contours, record_strokes, union_all
 
-# The broad nib: held at NIB_DEG from horizontal, its full edge MAIN
-# units across, leaving a HAIR-thin line when dragged along its own
-# angle. CONTRAST_POW shapes the falloff between the two.
+# The broad nib: held at NIB_DEG from horizontal. MAIN is the width of a
+# vertical stem, HAIR the nib's own thickness (the width of a stroke
+# dragged along the nib's angle). The nib's edge length follows from
+# the two, so a vertical comes out exactly MAIN wide.
 NIB_DEG = 35.0
 MAIN = 148.0
 HAIR = 24.0
-CONTRAST_POW = 1.4
-
-# How far a curve may deviate from its fractured (straightened)
-# replacement -- higher fractures into fewer, longer facets.
-FRACTURE_TOL = 30.0
-CURVE_MIN_PTS = 8
+_NIB = math.radians(NIB_DEG)
+NIB_LEN = (MAIN - HAIR * math.sin(_NIB)) / math.cos(_NIB)
 
 # Textura draws long diagonals as a heavy VERTICAL run plus a short
-# connector -- the picket-fence texture comes from everything snapping
-# to vertical. Straight authored diagonals in this angle band (from
+# connector. Straight authored diagonals in this angle band (from
 # horizontal) and at least this long get broken that way, anchored at
 # their terminal (free) end so feet and heads stay where the letter
 # needs them.
@@ -81,7 +68,8 @@ VERT_FRAC = 0.72
 VERT_SKIP = {"X", "x", "Z", "z", "four", "M", "seven"}
 
 # 6/9's shallow neck and 1's flag run close to the nib angle and would
-# all but vanish; they're main strokes, so they keep at least this width.
+# all but vanish; they're main strokes, so a round pen of this width
+# is laid under the nib sweep to keep them at least this wide.
 CHAIN_MIN_WIDTH = {"six": 62.0, "nine": 62.0, "one": 62.0}
 
 # Nib-mark diamonds: sized relative to MAIN at stroke terminals,
@@ -95,22 +83,93 @@ END_MAX_W = 70.0
 END_MERGE_DIST = 80.0
 
 DOT_MAX_LEN = 12.0
-
-# Humanizing (all crc32-seeded): per-facet width jitter, per-glyph
-# weight and lean drift. No bows -- fracture IS the geometry.
-FACET_VAR = 0.05
-GLYPH_WEIGHT_VAR = 0.03
-SLANT_VAR = 0.012
+CURVE_MIN_PTS = 8
 
 
 def _nib_width(dx: float, dy: float) -> float:
-    """Broad-nib stroke width for a movement direction: the nib edge's
-    projection across the stroke, normalized so a vertical stroke gets
-    exactly MAIN (directions steeper than vertical clip at full width)."""
-    phi = math.atan2(dy, dx)
-    rel = phi - math.radians(NIB_DEG)
-    f = min(abs(math.sin(rel)) / math.sin(math.radians(90.0 - NIB_DEG)), 1.0)
-    return HAIR + (MAIN - HAIR) * f**CONTRAST_POW
+    """Width of the nib sweep across a stroke moving in direction
+    (dx, dy): the nib edge's projection across it plus the nib
+    thickness's projection along it -- exactly MAIN for a vertical, the
+    thickness alone along the nib angle."""
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return HAIR
+    ux, uy = dx / length, dy / length
+    nx, ny = math.cos(_NIB), math.sin(_NIB)
+    across = abs(nx * uy - ny * ux)
+    along = abs(nx * ux + ny * uy)
+    return NIB_LEN * across + HAIR * along
+
+
+def _nib_corners(scale: float) -> list[Point]:
+    """The nib rectangle (length NIB_LEN, thickness HAIR, both scaled)
+    centered on the origin."""
+    hl, ht = NIB_LEN * scale / 2, HAIR * scale / 2
+    ux, uy = math.cos(_NIB), math.sin(_NIB)
+    vx, vy = -uy, ux
+    return [
+        (ux * hl + vx * ht, uy * hl + vy * ht),
+        (ux * hl - vx * ht, uy * hl - vy * ht),
+        (-ux * hl - vx * ht, -uy * hl - vy * ht),
+        (-ux * hl + vx * ht, -uy * hl + vy * ht),
+    ]
+
+
+def _end_clip(p: Point, q: Point, scale: float) -> sg.Polygon:
+    """The half-plane behind stroke end `p` (the side toward `q`): the
+    nib overhangs its endpoint by up to its own reach, so a straight
+    stroke's sweep is clipped square at each end. A stem's foot then
+    sits flat on the guideline it was drawn to, and a bar ends where it
+    was authored, as in every other face; the diamond nib-marks supply
+    the textura ends. Curves keep the nib's angled edge at their free
+    ends (c's mouth, e's tail): a half-plane through a curve's end
+    would cut through the rest of the letter."""
+    dx, dy = p[0] - q[0], p[1] - q[1]
+    length = math.hypot(dx, dy)
+    ux, uy = (dx / length, dy / length) if length > 1e-9 else (1.0, 0.0)
+    reach = 4 * NIB_LEN * scale
+    far = 1e5
+    # Corners of a rectangle spanning `far` behind p and `far` to each side.
+    vx, vy = -uy, ux
+    return sg.Polygon(
+        [
+            (p[0] + vx * far, p[1] + vy * far),
+            (p[0] - vx * far, p[1] - vy * far),
+            (
+                p[0] - vx * far - ux * reach - ux * far,
+                p[1] - vy * far - uy * reach - uy * far,
+            ),
+            (
+                p[0] + vx * far - ux * reach - ux * far,
+                p[1] + vy * far - uy * reach - uy * far,
+            ),
+        ]
+    )
+
+
+def _nib_sweep(pts: list[Point], closed: bool, scale: float, clip: bool = False):
+    """Sweep the nib along a path: the union, over consecutive point
+    pairs, of the convex hull of the nib placed at both points. `clip`
+    squares off both ends of an open path at its endpoints."""
+    corners = _nib_corners(scale)
+    pairs = list(itertools.pairwise(pts))
+    if closed and len(pts) > 2:
+        pairs.append((pts[-1], pts[0]))
+    hulls = []
+    for (x0, y0), (x1, y1) in pairs:
+        hulls.append(
+            sg.MultiPoint(
+                [(x0 + cx, y0 + cy) for cx, cy in corners]
+                + [(x1 + cx, y1 + cy) for cx, cy in corners]
+            ).convex_hull
+        )
+    if not hulls:
+        return sg.Polygon()
+    swept = unary_union(hulls).buffer(0)
+    if clip and not closed:
+        swept = swept.intersection(_end_clip(pts[0], pts[1], scale))
+        swept = swept.intersection(_end_clip(pts[-1], pts[-2], scale))
+    return swept
 
 
 def _verticalize(name: str, pts: list[Point], terminals) -> list[Point]:
@@ -150,37 +209,11 @@ def _verticalize(name: str, pts: list[Point], terminals) -> list[Point]:
     return out
 
 
-def _fracture(pts: list[Point], closed: bool) -> list[Point]:
-    """Break a sampled curve into blackletter facets. Straight chains
-    (authored point lists) pass through untouched."""
-    if len(pts) < CURVE_MIN_PTS:
-        return pts
-    if closed:
-        ring = sg.LineString([*pts, pts[0]]).simplify(FRACTURE_TOL)
-        out = [tuple(p) for p in ring.coords[:-1]]
-        return out if len(out) >= 3 else pts
-    line = sg.LineString(pts).simplify(FRACTURE_TOL)
-    return [tuple(p) for p in line.coords]
-
-
-def _seg_widths(name: str, si: int, pts: list[Point], closed: bool, scale: float):
-    """Per-segment nib widths, with the seeded per-facet jitter."""
-    pairs = list(zip(pts, pts[1:] + ([pts[0]] if closed else [])))
-    widths = []
-    for k, ((x0, y0), (x1, y1)) in enumerate(pairs):
-        w = _nib_width(x1 - x0, y1 - y0) * scale
-        w = max(w, CHAIN_MIN_WIDTH.get(name, 0.0))
-        w *= 1 + _rand(f"{name}:{si}:{k}:facet", -FACET_VAR, FACET_VAR)
-        widths.append(w)
-    return widths
-
-
 def _diamond(center: Point, size: float) -> sg.Polygon:
     """The mark a lifted broad nib leaves: a rhombus with its long axis
     along the nib angle."""
-    nib = math.radians(NIB_DEG)
-    ux, uy = math.cos(nib) * size * 0.62, math.sin(nib) * size * 0.62
-    vx, vy = -math.sin(nib) * size * 0.42, math.cos(nib) * size * 0.42
+    ux, uy = math.cos(_NIB) * size * 0.62, math.sin(_NIB) * size * 0.62
+    vx, vy = -math.sin(_NIB) * size * 0.42, math.cos(_NIB) * size * 0.42
     cx, cy = center
     return sg.Polygon(
         [(cx + ux, cy + uy), (cx + vx, cy + vy), (cx - ux, cy - uy), (cx - vx, cy - vy)]
@@ -205,29 +238,28 @@ def _outward(p: Point, q: Point) -> Point | None:
     return (dx / length, dy / length)
 
 
-def _terminal_diamonds(name: str, terminals) -> list[sg.Polygon]:
+def _terminal_diamonds(terminals) -> list[sg.Polygon]:
     shapes = []
-    for i, (p, toward) in enumerate(terminals):
+    for p, toward in terminals:
         out = _outward(p, toward)
         if out is None:
             continue
-        size = MAIN * DIAMOND_SIZE * (1 + _rand(f"{name}:dia:{i}", -0.08, 0.08))
-        shapes.append(_place_diamond(p, out, size))
+        shapes.append(_place_diamond(p, out, MAIN * DIAMOND_SIZE))
     return shapes
 
 
-def _end_diamonds(name: str, prepared, ink, terminals) -> list[sg.Polygon]:
+def _end_diamonds(prepared, ink, terminals) -> list[sg.Polygon]:
     """Small nib-marks on free-hanging thin curve ends -- the blackletter
     counterpart of the didone's ball terminals, same free-end probe."""
     term_pts = [p for p, _ in terminals]
     ends = []
-    for _, pts, widths, closed, is_curve in prepared:
+    for _, pts, closed, is_curve, scale in prepared:
         if closed or not is_curve:
             continue
         for end in (0, -1):
             p = pts[end]
             q = pts[1] if end == 0 else pts[-2]
-            w = widths[0] if end == 0 else widths[-1]
+            w = _nib_width(p[0] - q[0], p[1] - q[1]) * scale
             if w > END_MAX_W:
                 continue
             if any(math.dist(p, t) < 40 for t in term_pts):
@@ -247,55 +279,46 @@ def _end_diamonds(name: str, prepared, ink, terminals) -> list[sg.Polygon]:
                 break
         else:
             merged.append((p, out))
-    return [
-        _place_diamond(
-            p,
-            out,
-            MAIN * END_DIAMOND_SIZE * (1 + _rand(f"{name}:enddia:{i}", -0.08, 0.08)),
-        )
-        for i, (p, out) in enumerate(merged)
-    ]
+    return [_place_diamond(p, out, MAIN * END_DIAMOND_SIZE) for p, out in merged]
 
 
-def _prepare(name: str, si: int, stroke: dict, terminals):
+def _prepare(name: str, stroke: dict, terminals):
     """One recorded stroke -> ("dot", diamond) or ("stroke", (shape,
-    pts, widths, closed, is_curve)) after verticalizing, fracture and
-    nib widths."""
+    pts, closed, is_curve, scale)) after verticalizing, trimming and
+    the nib sweep."""
     pts = [tuple(p) for p in stroke["pts"]]
     closed = stroke["closed"]
     if closed and len(pts) > 1 and math.dist(pts[0], pts[-1]) < 1e-6:
         pts = pts[:-1]
-    if len(pts) < 2 or _path_length(pts) < DOT_MAX_LEN:
+    if (
+        len(pts) < 2
+        or sum(math.dist(a, b) for a, b in itertools.pairwise(pts)) < DOT_MAX_LEN
+    ):
         return "dot", _diamond(pts[0], stroke["width"] * 1.15)
     is_curve = len(pts) >= CURVE_MIN_PTS
-    if is_curve:
-        pts = _fracture(pts, closed)
-    elif not closed:
+    if not is_curve and not closed:
         pts = _verticalize(name, pts, terminals)
     scale = min(max(stroke["width"] / STROKE, 0.6), 1.5)
-    scale *= 1 + _rand(f"{name}:weight", -GLYPH_WEIGHT_VAR, GLYPH_WEIGHT_VAR)
-    widths = _seg_widths(name, si, pts, closed, scale)
-    return "stroke", (
-        _varwidth_shape(pts, widths, closed),
-        pts,
-        widths,
-        closed,
-        is_curve,
-    )
+    swept = _nib_sweep(pts, closed, scale, clip=not is_curve)
+    floor = CHAIN_MIN_WIDTH.get(name)
+    if floor and not is_curve:
+        line = sg.LinearRing(pts) if closed else sg.LineString(pts)
+        swept = unary_union([swept, line.buffer(floor / 2, quad_segs=8)])
+    return "stroke", (swept, pts, closed, is_curve, scale)
 
 
 def _comma_shapes() -> list:
     """A nib-mark with a hairline tail flicking down-left."""
     head = _diamond((250.0, 45.0), 110.0)
     tail_pts = [(262.0, 20.0), (238.0, -50.0), (200.0, -115.0)]
-    return [head, _varwidth_shape(tail_pts, [50.0, 22.0], closed=False)]
+    return [head, _nib_sweep(tail_pts, False, 0.45)]
 
 
 def _f_strokes_bl():
-    """Textura f: the didone's hairline flag arc fractures into an
-    invisible stub here, and the sans' 180-unit crossbar disappears
-    inside a 148-wide stem. Redrawn with a long bar and a slimmer,
-    clearly angled flag riding off the stem top."""
+    """Textura f: the sans' 180-unit crossbar disappears inside a
+    148-wide stem, and its hook comes out as a hairline stub. Redrawn
+    with a long bar and a slimmer, clearly angled flag riding off the
+    stem top."""
     return [
         {"pts": [(170.0, 0.0), (170.0, 700.0)], "width": STROKE, "closed": False},
         {"pts": [(40.0, 480.0), (315.0, 480.0)], "width": STROKE, "closed": False},
@@ -316,7 +339,7 @@ def _t_strokes_bl():
     ]
 
 
-OVERRIDES = {**STROKE_OVERRIDES, "f": _f_strokes_bl, "t": _t_strokes_bl}
+OVERRIDES = {"f": _f_strokes_bl, "t": _t_strokes_bl}
 
 
 def blackletter_shapes(name: str, fn) -> tuple[list, float]:
@@ -329,31 +352,23 @@ def blackletter_shapes(name: str, fn) -> tuple[list, float]:
     if name in OVERRIDES:
         strokes = OVERRIDES[name]()
     dots, prepared = [], []
-    for si, s in enumerate(strokes):
-        kind, payload = _prepare(name, si, s, terminals)
+    for s in strokes:
+        kind, payload = _prepare(name, s, terminals)
         if kind == "dot":
             dots.append(payload)
         else:
             prepared.append(payload)
     stroke_shapes = [p[0] for p in prepared]
     ink = unary_union(stroke_shapes + dots) if (stroke_shapes or dots) else sg.Polygon()
-    diamonds = _terminal_diamonds(name, terminals)
-    diamonds += _end_diamonds(name, prepared, ink, terminals)
+    diamonds = _terminal_diamonds(terminals)
+    diamonds += _end_diamonds(prepared, ink, terminals)
     return stroke_shapes + dots + diamonds, advance
 
 
 def _build(name: str, fn):
     def build():
         shapes, advance = blackletter_shapes(name, fn)
-        geom = union_all(shapes)
-        slant = _rand(f"{name}:lean", -SLANT_VAR, SLANT_VAR)
-        geom = affinity.affine_transform(geom, [1, slant, 0, 1, 0, 0])
-        geom = (
-            geom.buffer(SOFTEN_R, quad_segs=4)
-            .buffer(-2 * SOFTEN_R, quad_segs=4)
-            .buffer(SOFTEN_R, quad_segs=4)
-        )
-        return polygon_to_contours(geom), advance
+        return polygon_to_contours(union_all(shapes)), advance
 
     return build
 

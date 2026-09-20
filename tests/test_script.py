@@ -1,4 +1,6 @@
 import pytest
+from shapely import geometry as sg
+from shapely.ops import unary_union
 
 from fontgen.build import build_font, normalize_spacing
 from fontgen.glyphs import CMAP, GLYPHS, SKELETONS
@@ -10,6 +12,7 @@ from fontgen.script import (
     SLANT,
     TOP_EXIT,
     TOP_JOIN_Y,
+    body_bounds,
     make_glyphs,
     script_strokes,
 )
@@ -31,9 +34,10 @@ def test_cmap_covered():
 
 
 # No-tail letters: j's pen finishes on the descender hook with no
-# natural join point, and g/q/y exit through their descenders (a rising
-# baseline tail crossed their own ink).
-TAILED = sorted(LOWERCASE - {"j"} - NO_TAIL)
+# natural join point, g/q/y exit through their descenders (a rising
+# baseline tail crossed their own ink), and b/f/p/r/s have no pen-lift
+# on their right side (see BASELINE_TAILED below).
+TAILED = sorted(LOWERCASE - set("jbfprs") - NO_TAIL)
 
 
 @pytest.mark.parametrize(
@@ -95,11 +99,13 @@ def test_uppercase_gets_no_tail_or_loops():
             assert unsheared == pytest.approx(p_sans)
 
 
-def test_long_straight_strokes_are_bowed():
-    """l's stem must no longer be a ruler line: resampled with interior
-    points that deviate from the endpoint chord."""
-    strokes = script_strokes("l", SKELETONS["l"])
-    stem = strokes[0]["pts"]
+def test_script_stems_are_straight_and_hand_stems_are_bowed():
+    """The script face is typeset: l's stem stays a ruler line. Only the
+    hand face (bow=True) resamples it with interior points that deviate
+    from the endpoint chord."""
+    straight = script_strokes("l", SKELETONS["l"])[0]["pts"]
+    assert len(straight) == 2
+    stem = script_strokes("l", SKELETONS["l"], bow=True)[0]["pts"]
     assert len(stem) > 2
     (x0, y0), (x1, y1) = stem[0], stem[-1]
     mid = stem[len(stem) // 2]
@@ -107,26 +113,41 @@ def test_long_straight_strokes_are_bowed():
     assert abs(mid[0] - chord_x) > 5
 
 
-@pytest.mark.parametrize("name", sorted("bdhkl"))
-def test_ascender_loops_added(name):
+def test_tail_is_flagged_and_excluded_from_spacing():
+    """The exit tail is the only stroke flagged "tail", and body_bounds
+    stops at the body's ink so the tail can overshoot the advance."""
+    strokes = script_strokes("n", SKELETONS["n"])
+    tails = [s for s in strokes if s.get("tail")]
+    assert len(tails) == 1 and tails[0] is strokes[-1]
+    x_min, x_max = body_bounds(strokes)
+    tail_tip = max(x for x, _ in tails[0]["pts"])
+    assert tail_tip > x_max + 50
+    assert x_min < x_max
+    assert body_bounds(tails) is None
+
+
+# skeleton + loop + exit tail; b has no tail (its stem is on the left)
+@pytest.mark.parametrize(
+    "name,extra", [("b", 1), ("d", 2), ("h", 2), ("k", 2), ("l", 2)]
+)
+def test_ascender_loops_added(name, extra):
     with record_strokes() as sans_strokes:
         SKELETONS[name]()
     strokes = script_strokes(name, SKELETONS[name])
-    # skeleton + loop + exit tail
-    assert len(strokes) == len(sans_strokes) + 2
+    assert len(strokes) == len(sans_strokes) + extra
 
 
-def test_f_gets_tail_but_no_loop():
-    """f's own top hook plus an ascender loop was an unreadable knot --
-    it keeps the exit tail only."""
+def test_f_gets_no_loop_and_no_tail():
+    """f's own top hook plus an ascender loop was an unreadable knot,
+    and a baseline tail made it read as t -- it stays the bare skeleton."""
     with record_strokes() as sans_strokes:
         SKELETONS["f"]()
     strokes = script_strokes("f", SKELETONS["f"])
-    assert len(strokes) == len(sans_strokes) + 1
+    assert len(strokes) == len(sans_strokes)
 
 
-# p: loop + exit tail; q: loop only (no tail, it exits through the loop)
-@pytest.mark.parametrize("name,extra", [("p", 2), ("q", 1)])
+# loop only: p's stem is on its left, q exits through the loop
+@pytest.mark.parametrize("name,extra", [("p", 1), ("q", 1)])
 def test_descender_loops_added(name, extra):
     with record_strokes() as sans_strokes:
         SKELETONS[name]()
@@ -150,3 +171,74 @@ def test_full_script_font_builds(tmp_path):
     build_font(glyphs, CMAP, "Test Script", "Regular", str(out_path))
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+# The exact set of letters that grow a tail. A tail is only right where
+# the pen leaves the letter from its right side; everything else (the
+# tail slashing through b/p/s's own bowl, r + tail reading as c, f + tail
+# reading as t) was a bug that the "reaches right" test above let through.
+BASELINE_TAILED = set("acdehiklmntuxz")
+
+
+def _unsheared_tail(name):
+    strokes = script_strokes(name, SKELETONS[name])
+    tails = [s for s in strokes if s.get("tail")]
+    body = [s for s in strokes if not s.get("tail")]
+
+    def unshear(s):
+        return [(x - SLANT * y, y) for x, y in s["pts"]]
+
+    return [unshear(s) for s in tails], [{**s, "pts": unshear(s)} for s in body]
+
+
+@pytest.mark.parametrize("name", sorted(LOWERCASE))
+def test_exactly_the_right_letters_are_tailed(name):
+    tails, _ = _unsheared_tail(name)
+    assert len(tails) == (1 if name in BASELINE_TAILED | TOP_EXIT else 0)
+
+
+@pytest.mark.parametrize("name", sorted(BASELINE_TAILED))
+def test_tail_never_crosses_its_own_letter(name):
+    """Past its first stretch (where it necessarily leaves the ink it
+    grows from) the tail runs through free space."""
+    tails, body = _unsheared_tail(name)
+    ink = unary_union(
+        [
+            sg.LineString(s["pts"] + ([s["pts"][0]] if s["closed"] else [])).buffer(
+                s["width"] / 2
+            )
+            for s in body
+            if len(set(s["pts"])) > 1
+        ]
+    )
+    tail = sg.LineString(tails[0])
+    free = tail.difference(sg.Point(tails[0][0]).buffer(120))
+    assert not free.intersects(ink)
+
+
+@pytest.mark.parametrize("name", ["c", "e"])
+def test_tail_continues_a_rising_terminal(name):
+    """c and e finish travelling up and to the right; the tail carries
+    that motion on instead of dipping back to the baseline first (which
+    hung a hook off the terminal)."""
+    tails, body = _unsheared_tail(name)
+    start = tails[0][0]
+    # it starts at a real pen-lift, not at a junction between strokes
+    ends = [p for s in body for p in (s["pts"][0], s["pts"][-1])]
+    assert ends.count(start) == 1
+    assert min(y for _, y in tails[0]) >= start[1] - 1
+
+
+def test_u_tail_leaves_from_a_grounded_stem():
+    """u's right stem stops where the bowl begins; the tail must not
+    dangle from that junction -- the stem runs down to the baseline and
+    the tail leaves from its foot, as on a/d/n."""
+    tails, body = _unsheared_tail("u")
+    sx, sy = tails[0][0]
+    assert sy == pytest.approx(0)
+    assert any(
+        not s["closed"]
+        and len(s["pts"]) == 2
+        and (sx, sy) in [tuple(p) for p in s["pts"]]
+        for s in body
+    )

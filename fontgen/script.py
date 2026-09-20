@@ -30,8 +30,11 @@ SLANT = math.tan(math.radians(SLANT_DEG))
 
 # Cursive joins happen low, around a third of the x-height: the exit
 # tail ends at JOIN_Y, REACH to the right of the glyph's ink edge.
+# Spacing ignores the tail (see body_bounds), so the tip lands REACH
+# minus both letters' side bearings INSIDE the next letter's ink, where
+# it meets a stem or bowl instead of pointing at a gap.
 JOIN_Y = 160
-REACH = 170
+REACH = 150
 
 # Exit tails and loop up-strokes are drawn a touch lighter than the
 # main strokes, which reads as the pen easing off pressure.
@@ -42,6 +45,13 @@ LOOP_WIDTH_RATIO = 0.85
 # letters that end on a closed bowl, any point) in this y-band qualify
 # as the tail's start.
 EXIT_ZONE_Y = (-30, 290)
+
+# ...and only from the letter's right side: the exit may sit at most
+# this far inside the body's right edge. t's crossbar overhangs its stem
+# by 110 and keeps its tail; f's hook (130), r's arm, s's lower-left
+# terminal and b/p's stems are out -- those tails slashed through the
+# bowl or turned r into c and f into t.
+EXIT_MAX_INSET = 120
 
 # Cursive loops. Ascenders (a full-height 2-pt vertical stem) get an
 # up-stroke that bows LOOP_W out to the right and rejoins the stem at
@@ -70,9 +80,11 @@ ASC_CROSS_Y = X_HEIGHT * 0.58
 ASC_MIN_TOP = 660
 DESC_MAX_BOTTOM = -150
 
-# Naturalness: any long ruler-straight segment gets a subtle bow --
-# resampled with a one-hump perpendicular sine displacement, direction
-# chosen deterministically per (glyph, stroke) so builds are stable.
+# Naturalness, for the hand face only: any long ruler-straight segment
+# gets a subtle bow -- resampled with a one-hump perpendicular sine
+# displacement, direction chosen deterministically per (glyph, stroke)
+# so builds are stable. The script face sets its stems straight, like
+# every face but hand.
 BOW_MAX = 13
 BOW_MIN_LEN = 150
 
@@ -99,46 +111,86 @@ def _cubic(p0: Point, p1: Point, p2: Point, p3: Point, n: int = 14) -> list[Poin
     return pts
 
 
-def _exit_point(strokes: list[dict]) -> Point | None:
-    """Where the pen leaves the letter: the rightmost open-stroke endpoint
-    inside the exit zone, else (for bowl-final letters like o) the
-    rightmost point anywhere on a stroke inside the zone.
+def _ground_stem(strokes: list[dict]) -> list[dict]:
+    """u's right stem stops where its bowl begins, so the pen never
+    reaches the baseline on that side. Run such a stem -- a vertical on
+    the letter's right whose foot hangs in the exit zone, joined to
+    another stroke -- down to the baseline, giving the tail a foot to
+    leave from (as on a/d/n) instead of dangling off the junction."""
+    x_max = max(x for s in strokes for x, _ in s["pts"])
+    ends = [p for s in strokes if not s["closed"] for p in (s["pts"][0], s["pts"][-1])]
+    out = []
+    for s in strokes:
+        if _vertical_stem(s):
+            i = 0 if s["pts"][0][1] < s["pts"][1][1] else 1
+            foot = s["pts"][i]
+            if (
+                0 < foot[1] <= EXIT_ZONE_Y[1]
+                and foot[0] >= x_max - EXIT_MAX_INSET
+                and sum(1 for e in ends if math.dist(e, foot) < 1) > 1
+            ):
+                pts = list(s["pts"])
+                pts[i] = (foot[0], 0.0)
+                s = {**s, "pts": pts}
+        out.append(s)
+    return out
+
+
+def _exit(strokes: list[dict]) -> tuple[Point, Point] | None:
+    """Where the pen leaves the letter, and the direction it is
+    travelling there: the rightmost pen-lift inside the exit zone. A
+    pen-lift is an open stroke's endpoint that no other stroke shares
+    (e's crossbar meets its bowl at the right; the pen does not lift
+    there). None when that point is not on the letter's right side: a
+    tail from b/p/r/s/f's left would run through or under the letter's
+    own body.
     """
     lo, hi = EXIT_ZONE_Y
-
-    def in_zone(p: Point) -> bool:
-        return lo <= p[1] <= hi
-
-    endpoints = [
-        p
-        for s in strokes
-        if not s["closed"] and len(s["pts"]) >= 2
-        for p in (s["pts"][0], s["pts"][-1])
-        if in_zone(p)
+    opens = [s["pts"] for s in strokes if not s["closed"] and len(s["pts"]) >= 2]
+    ends = [(p[i], p[i + step]) for p in opens for i, step in ((0, 1), (-1, -1))]
+    lifts = [
+        (at, prev)
+        for at, prev in ends
+        if lo <= at[1] <= hi and sum(1 for e, _ in ends if math.dist(e, at) < 1) == 1
     ]
-    if endpoints:
-        return max(endpoints, key=lambda p: p[0])
-    everywhere = [p for s in strokes for p in s["pts"] if in_zone(p)]
-    if everywhere:
-        return max(everywhere, key=lambda p: p[0])
-    return None
+    if not lifts:
+        return None
+    at, prev = max(lifts, key=lambda e: e[0][0])
+    x_max = max(x for s in strokes for x, _ in s["pts"])
+    if at[0] < x_max - EXIT_MAX_INSET:
+        return None
+    d = math.hypot(at[0] - prev[0], at[1] - prev[1]) or 1.0
+    return at, ((at[0] - prev[0]) / d, (at[1] - prev[1]) / d)
 
 
 def _exit_tail(strokes: list[dict]) -> dict | None:
-    start = _exit_point(strokes)
-    if start is None:
+    found = _exit(strokes)
+    if found is None:
         return None
+    start, (dx, dy) = found
     x_max = max(x for s in strokes for x, _ in s["pts"])
     end = (x_max + REACH, JOIN_Y)
     span = end[0] - start[0]
     if span <= 0:
         return None
-    # Sag close to the baseline before hooking up late -- a rounder,
-    # more pen-like swash than an even S-curve.
-    c1 = (start[0] + span * 0.22, start[1] * 0.12)
-    c2 = (end[0] - span * 0.30, JOIN_Y * 0.18)
+    if dx > 0 and dy > 0:
+        # The pen is already rising to the right (c, e): carry that
+        # motion on. Sagging first hung a hook off the terminal.
+        lead = span * 0.35
+        c1 = (start[0] + dx * lead, min(start[1] + dy * lead, max(start[1], JOIN_Y)))
+        c2 = (end[0] - span * 0.35, max(start[1], JOIN_Y * 0.85))
+    else:
+        # Sag close to the baseline before hooking up late -- a rounder,
+        # more pen-like swash than an even S-curve.
+        c1 = (start[0] + span * 0.22, start[1] * 0.12)
+        c2 = (end[0] - span * 0.30, JOIN_Y * 0.18)
     width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
-    return {"pts": _cubic(start, c1, c2, end), "width": width, "closed": False}
+    return {
+        "pts": _cubic(start, c1, c2, end),
+        "width": width,
+        "closed": False,
+        "tail": True,
+    }
 
 
 def _top_exit_tail(strokes: list[dict]) -> dict | None:
@@ -168,7 +220,12 @@ def _top_exit_tail(strokes: list[dict]) -> dict | None:
     c1 = (start[0] + span * 0.45, start[1] + 12)
     c2 = (end[0] - span * 0.3, end[1] + 30)
     width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
-    return {"pts": _cubic(start, c1, c2, end), "width": width, "closed": False}
+    return {
+        "pts": _cubic(start, c1, c2, end),
+        "width": width,
+        "closed": False,
+        "tail": True,
+    }
 
 
 def _vertical_stem(s: dict) -> bool:
@@ -238,10 +295,11 @@ def _slant(strokes: list[dict]) -> list[dict]:
     return [{**s, "pts": [(x + SLANT * y, y) for x, y in s["pts"]]} for s in strokes]
 
 
-def script_strokes(name: str, fn) -> list[dict]:
+def script_strokes(name: str, fn, bow: bool = False) -> list[dict]:
     """The script variant's pen strokes for one glyph: recorded skeleton,
-    plus cursive loops and exit tail for lowercase and a soft bow on
-    every long straight stroke, then slanted.
+    plus cursive loops and exit tail for lowercase (the tail stroke is
+    flagged "tail"), then slanted. `bow=True` (the hand face) first
+    gives every long straight stroke a soft bow.
     """
     with record_strokes() as strokes:
         fn()
@@ -251,11 +309,29 @@ def script_strokes(name: str, fn) -> list[dict]:
         # geometry -- a bowed stem gains interior points that would
         # otherwise masquerade as exit candidates (j grew a bogus tail).
         if name not in NO_TAIL:
-            make_tail = _top_exit_tail if name in TOP_EXIT else _exit_tail
-            tail = make_tail(strokes)
+            if name in TOP_EXIT:
+                tail = _top_exit_tail(strokes)
+            else:
+                strokes = _ground_stem(strokes)
+                tail = _exit_tail(strokes)
             if tail is not None:
                 strokes = strokes + [tail]
-    return _slant(_naturalize(name, strokes))
+    if bow:
+        strokes = _naturalize(name, strokes)
+    return _slant(strokes)
+
+
+def body_bounds(strokes: list[dict]) -> tuple[float, float] | None:
+    """The horizontal extent of a glyph's ink WITHOUT its exit tail: the
+    box its side bearings are measured from, so the tail is free to
+    overshoot the advance and land on the next letter. None when every
+    stroke is a tail (never, in practice) or there are no strokes."""
+    body = [s for s in strokes if not s.get("tail")]
+    if not body:
+        return None
+    x_min = min(x - s["width"] / 2 for s in body for x, _ in s["pts"])
+    x_max = max(x + s["width"] / 2 for s in body for x, _ in s["pts"])
+    return x_min, x_max
 
 
 def _build(name: str, fn):
@@ -268,6 +344,17 @@ def _build(name: str, fn):
         return finalize(shapes), advance
 
     return build
+
+
+def spacing_bounds(skeletons: dict) -> dict[str, tuple[float, float]]:
+    """name -> (x_min, x_max) of the tail-less ink for every glyph, to
+    hand to normalize_spacing so tails reach into the next letter."""
+    bounds = {}
+    for name, fn in skeletons.items():
+        b = body_bounds(script_strokes(name, fn))
+        if b is not None:
+            bounds[name] = b
+    return bounds
 
 
 def make_glyphs(skeletons: dict) -> dict:

@@ -49,7 +49,7 @@ def test_diamond_foot_bites_past_baseline():
     ink = _ink("I")
     assert -35 <= ink.bounds[1] <= -5
     foot, _ = _cut(ink, LineString([(-300, 6), (900, 6)]))
-    assert foot >= MAIN * 1.1
+    assert foot >= MAIN * 1.05
 
 
 def test_rising_diagonal_thins_toward_nib_angle():
@@ -74,11 +74,43 @@ def test_verticalized_v_has_two_full_stems():
     assert all(p >= MAIN * 0.8 for p in pieces)
 
 
-def test_fracture_flattens_curves():
-    # The fractured O is a polygon of a few facets: far fewer outline
-    # points than the sans' 64-segment ring even after corner softening.
+def test_curves_are_swept_smooth_and_modulate_with_the_nib():
+    # O is a smooth ring (no fracture: as many outline points as a
+    # sampled curve), thick where the path runs across the nib and
+    # HAIR-thin where it runs along it.
     contours, _ = GLYPHS["O"]()
-    assert all(len(c) <= 90 for c in contours)
+    assert sum(len(c) for c in contours) >= 120
+    ink = _ink("O")
+    cx = (ink.bounds[0] + ink.bounds[2]) / 2
+    cy = (ink.bounds[1] + ink.bounds[3]) / 2
+    nib = math.radians(35)
+    # A cut through the center PERPENDICULAR to the nib meets the ring
+    # where its path runs along the nib: thin. A cut along the nib angle
+    # meets it where the path runs across the nib: full width.
+    along = LineString(
+        [
+            (cx - 900 * math.cos(nib), cy - 900 * math.sin(nib)),
+            (cx + 900 * math.cos(nib), cy + 900 * math.sin(nib)),
+        ]
+    )
+    across = LineString(
+        [
+            (cx + 900 * math.sin(nib), cy - 900 * math.cos(nib)),
+            (cx - 900 * math.sin(nib), cy + 900 * math.cos(nib)),
+        ]
+    )
+    _, thin = _cut(ink, across)
+    _, thick = _cut(ink, along)
+    assert max(thin) <= HAIR * 1.6
+    assert min(thick) >= MAIN * 0.85
+
+
+def test_stroke_ends_are_clipped_flat_at_their_endpoints():
+    # A stem's foot ink stops on the baseline (the diamond alone pokes
+    # past), and a bar ends where it was authored.
+    ink = _ink("I")
+    stem = ink.intersection(LineString([(-300, 2), (900, 2)]))
+    assert stem.length >= MAIN * 0.95
 
 
 def test_t_and_f_bars_clear_the_stem():

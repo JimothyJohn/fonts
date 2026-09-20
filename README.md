@@ -29,8 +29,10 @@ family also carries a GPOS kerning table.
 
 ## Using the fonts
 
-The built TTFs are tracked in the repo: `out/*.ttf` is the canonical copy,
-and `docs/fonts/` mirrors them for the specimen page. Install them like any
+Download the TTFs, individually or as one zip, from the
+[Releases page](https://github.com/JimothyJohn/fonts/releases). They are
+also tracked in the repo: `out/*.ttf` is the canonical copy, and
+`docs/fonts/` mirrors them for the specimen page. Install them like any
 other TrueType font, or load them on the web:
 
 ```css
@@ -106,3 +108,12 @@ Work happens on feature branches merged into `dev` by PR; CI runs lint,
 the test suite, and a full build of all seven faces on every PR, and green
 checks auto-merge. `master` is the published line: GitHub Pages serves the
 specimen site from `master:/docs`.
+
+To cut a release, promote `dev` to `master` and push a `v*` tag. The release
+workflow rebuilds every face on the runner, refuses to publish unless the
+rebuild is byte-identical to the tracked TTFs, and attaches the sixteen TTFs
+plus a zip to a GitHub Release.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

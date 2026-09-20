@@ -2,9 +2,10 @@
 name = "font"
 version = "0.1.0"
 description = "Add your description here"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fonttools>=4.63.0",
+    "fonttools>=4.65.0",
     "pillow>=12.3.0",
     "shapely>=2.1.2",
 ]
