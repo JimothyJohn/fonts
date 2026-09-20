@@ -535,9 +535,24 @@ def glyph_J(R=470, T=CAP):
 # ---- digits -------------------------------------------------------------
 
 
+def _oval(cx, cy, rx, ry):
+    """A closed elliptical stroke: `ring` with independent x/y radii."""
+    return stroke_union(
+        [ellipse_pts(cx, cy, rx, ry, 90, 450)[:-1]], STROKE, closed=True
+    )
+
+
+#: The figures' stacked rounds (3, 8) split the height unevenly, smaller
+#: on top: centerline radii of the upper and lower bowl. They sum to the
+#: full curve height, so the two bowls share one waist line.
+FIG_TOP_R = 170
+FIG_BOTTOM_R = CAP_CURVE_R - FIG_TOP_R
+
+
 def glyph_zero():
-    cx, cy, r_out = 360, MID, RING_R
-    return [ring(cx, cy, r_out, r_out - STROKE)], 700, []
+    # An oval, not the letter O's circle: beside O a circular 0 is the
+    # same glyph, and beside the other figures it is half again as wide.
+    return [_oval(310, MID, 215, CAP_CURVE_R)], 620, []
 
 
 def glyph_one():
@@ -552,13 +567,15 @@ def glyph_one():
 
 def glyph_two(L=80, R=560, T=CAP, B=BASE):
     # One continuous spine: open the mouth at the upper LEFT (150deg),
-    # sweep over the top, and run off the arc at -35deg straight into
-    # the baseline corner -- the tangent there already points at (L, B),
-    # so the arc-to-diagonal joint is smooth instead of the elbow the
-    # old three-piece 2 had. Base bar laid on separately.
+    # sweep over the top, and leave the arc exactly where its tangent
+    # points at the baseline corner (L, B), so the arc-to-diagonal joint
+    # is smooth. (A fixed -35deg was 6deg off tangent: a visible kink.)
+    # Base bar laid on separately.
     r = 175
     cx, cy = (L + R) / 2, CAP_CURVE - r
-    spine = arc_pts(cx, cy, r, 150, -35) + [(L, B)]
+    to_corner = math.degrees(math.atan2(B - cy, L - cx))
+    leave = to_corner + math.degrees(math.acos(r / math.hypot(L - cx, B - cy)))
+    spine = arc_pts(cx, cy, r, 150, leave) + [(L, B)]
     shapes = [
         stroke_union([spine], STROKE, cap_style="round"),
         _chain([(L, B), (R, B)]),
@@ -572,70 +589,68 @@ def glyph_three(L=150, R=620, T=CAP, B=BASE):
     # arcs off at exactly +/-90, so the 3 had a dead-flat left side and
     # read as a bracket. Sweeping past vertical (to 125/-125) hooks the
     # top arc back toward the upper left and the bottom arc toward the
-    # lower left, the way a 3 is actually drawn. Bottom bowl a touch
-    # bigger, matching B's top/bottom logic.
-    r_top, r_bot = 170, 180
+    # lower left, the way a 3 is actually drawn. Bottom bowl bigger, as
+    # on the 8; the radii share a waist line, so the top bowl ends
+    # exactly where the bottom one starts (they used to miss by 30,
+    # leaving a two-lobed nub).
     cx = L + 10
     shapes = [
-        _bowl(cx, CAP_CURVE - r_top, r_top, 125, -90, cap_style="round"),
-        _bowl(cx, BASE_CURVE + r_bot, r_bot, 90, -125, cap_style="round"),
+        _bowl(cx, CAP_CURVE - FIG_TOP_R, FIG_TOP_R, 125, -90, cap_style="round"),
+        _bowl(cx, BASE_CURVE + FIG_BOTTOM_R, FIG_BOTTOM_R, 90, -125, cap_style="round"),
     ]
     return shapes, 660, []
 
 
 def glyph_four(L=70, R=590, T=CAP, B=BASE):
     midy = 260
-    # The bar runs on past the stem: stopping it flush at the stem closed
-    # the figure into a solid triangle-on-a-stick in every face.
+    # The diagonal runs into the stem's top: stopping it 60 short gave
+    # the figure two round tops with a notch between them. The bar runs
+    # on past the stem: stopping it flush at the stem closed the figure
+    # into a solid triangle-on-a-stick in every face.
     shapes = [
-        _chain([(R - 60, T), (L, midy), (R + 60, midy)]),
+        _chain([(R, T), (L, midy), (R + 60, midy)]),
         _chain([(R, T), (R, B)]),
     ]
-    # No separate terminal for the diagonal's own top end -- it's only 60
-    # units from the vertical stem's top, and two independent flared feet
-    # that close together crash into each other's fillets at sharp angles.
-    # The vertical stem's own serif is close enough to let the diagonal
-    # simply merge into it.
     terminals = [((R, T), (R, B)), ((R, B), (R, T))]
     return shapes, 660, terminals
 
 
 def glyph_five(L=90, R=550, T=CAP, B=BASE):
-    # A real 5 at last -- the old glyph just reused the S skeleton. One
-    # continuous spine, as drawn: top bar right-to-left, down the short
-    # stem, then around the bowl (150deg over the right side to -115deg,
-    # mouth at the lower left). The stem-to-arc junction is bridged by
-    # the polyline itself, so no piece can drift out of tangency.
+    # One continuous spine, as drawn: top bar right-to-left, down the
+    # stem, then around the bowl to a mouth at the lower left. The bowl
+    # is placed so it passes THROUGH the stem: the stem ends on the
+    # curve and the bowl springs from its foot. (The bowl used to sit
+    # clear of the stem, with a sideways jog to reach it -- a knob
+    # hanging off the stem in every face.)
     stem_x = L + 40
-    r = 190
-    cx, cy = (L + R) / 2 + 10, BASE_CURVE + r
-    spine = [(R - 30, T), (stem_x, T), (stem_x, 350)] + arc_pts(cx, cy, r, 152, -115)
+    rx, ry, spring = 235, 200, 140
+    cx = stem_x - rx * math.cos(math.radians(spring))
+    bowl = ellipse_pts(cx, BASE_CURVE + ry, rx, ry, spring, -120)
+    spine = [(R - 30, T), (stem_x, T)] + bowl
     shapes = [stroke_union([spine], STROKE, cap_style="round")]
     terminals = [((R - 30, T), (stem_x, T))]
     return shapes, 640, terminals
 
 
-def glyph_six(L=100, R=570, T=CAP, B=BASE):
-    # The neck is now a true curve: up the left side from the bowl,
-    # then a wide elliptical sweep over to the upper right, ending
-    # mid-air (where the derived faces put their ball/diamond
-    # terminals). The old two-segment chain had a sharp elbow that read
-    # as a broken flag in every face.
-    # The neck's straight run sits ON the bowl's left band (bowl-left
-    # centerline, cx - r_bowl + STROKE/2), not at a fixed left margin --
-    # at r_bowl=170 the old L+20 start left a visible gap between neck
-    # and bowl at the waist. Bowl bumped up a size; at 170 it read tiny
-    # against the tall neck.
-    r_bowl = 190
+def _six_strokes(L, R):
+    """(bowl, neck) point lists for the 6. The neck is one quarter-oval
+    that leaves the bowl's leftmost point vertically and sweeps over the
+    top to a terminal above the bowl's right side -- no straight run at
+    all. (It used to be a 325-unit ruler line up from a small circular
+    bowl, which read as a b; the 9, its twin, read as a g.)"""
     cx = (L + R) / 2
-    cy_bowl = BASE_CURVE + r_bowl - STROKE / 2
-    neck_x = cx - r_bowl + STROKE / 2
-    rx, ry = 250, 215
-    neck = [(neck_x, cy_bowl)] + ellipse_pts(
-        neck_x + rx, CAP_CURVE - ry, rx, ry, 180, 65
-    )
+    rx, ry = 205, 215
+    cy = BASE_CURVE + ry
+    bowl = ellipse_pts(cx, cy, rx, ry, 90, 450)[:-1]
+    neck_rx = 260
+    neck = ellipse_pts(cx - rx + neck_rx, cy, neck_rx, CAP_CURVE - cy, 180, 60)
+    return bowl, neck
+
+
+def glyph_six(L=100, R=570, T=CAP, B=BASE):
+    bowl, neck = _six_strokes(L, R)
     shapes = [
-        ring(cx, cy_bowl, r_bowl, r_bowl - STROKE),
+        stroke_union([bowl], STROKE, closed=True),
         stroke_union([neck], STROKE, cap_style="round"),
     ]
     return shapes, 640, []
@@ -648,41 +663,31 @@ def glyph_seven(L=80, R=580, T=CAP, B=BASE):
 
 
 def glyph_eight(L=80, R=580, T=CAP, B=BASE):
-    # Rings sized so the figure's OUTER edges land on the curve lines like
-    # every other round: top ring at the cap, bottom ring filling whatever
-    # is left down to the baseline (overlapping the top one by 10, so the
-    # waist is one continuous X rather than two tangent circles).
-    r_top = 196
+    # Two rings whose CENTERLINES touch at the waist, so the waist is
+    # one stroke thick. (Sized outer-edge to outer-edge with a token
+    # overlap, the waist was a band nearly two strokes deep.)
     cx = (L + R) / 2
-    cy_top = CAP_CURVE + STROKE / 2 - r_top
-    waist = cy_top - r_top + 10
-    r_bot = (waist - (BASE_CURVE - STROKE / 2)) / 2
-    cy_bot = waist - r_bot
     shapes = [
-        ring(cx, cy_top, r_top, r_top - STROKE),
-        ring(cx, cy_bot, r_bot, r_bot - STROKE),
+        ring(cx, CAP_CURVE - FIG_TOP_R, FIG_TOP_R + STROKE / 2, FIG_TOP_R - STROKE / 2),
+        ring(
+            cx,
+            BASE_CURVE + FIG_BOTTOM_R,
+            FIG_BOTTOM_R + STROKE / 2,
+            FIG_BOTTOM_R - STROKE / 2,
+        ),
     ]
     return shapes, 660, []
 
 
 def glyph_nine(L=100, R=570, T=CAP, B=BASE):
-    # 6 rotated in spirit: bowl at the top, neck running down the right
-    # side and sweeping out through a wide elliptical tail to the lower
-    # left, ending mid-air near the baseline.
-    # Mirror of six's fix: neck runs down the bowl's own right band
-    # (cx + r_bowl - STROKE/2) instead of a fixed R - 20, which sat just
-    # clear of the 170-radius bowl and left a seam; bowl enlarged to
-    # match six.
-    r_bowl = 190
+    # The 6 turned over: every point rotated half a turn about the
+    # figure's center.
     cx = (L + R) / 2
-    cy_bowl = CAP_CURVE + STROKE / 2 - r_bowl
-    neck_x = cx + r_bowl - STROKE / 2
-    rx, ry = 250, 215
-    neck = [(neck_x, cy_bowl)] + ellipse_pts(
-        neck_x - rx, BASE_CURVE + ry, rx, ry, 0, -115
+    bowl, neck = (
+        [(2 * cx - x, 2 * MID - y) for x, y in pts] for pts in _six_strokes(L, R)
     )
     shapes = [
-        ring(cx, cy_bowl, r_bowl, r_bowl - STROKE),
+        stroke_union([bowl], STROKE, closed=True),
         stroke_union([neck], STROKE, cap_style="round"),
     ]
     return shapes, 640, []
