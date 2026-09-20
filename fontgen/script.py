@@ -46,6 +46,13 @@ LOOP_WIDTH_RATIO = 0.85
 # as the tail's start.
 EXIT_ZONE_Y = (-30, 290)
 
+# ...and only from the letter's right side: the exit may sit at most
+# this far inside the body's right edge. t's crossbar overhangs its stem
+# by 110 and keeps its tail; f's hook (130), r's arm, s's lower-left
+# terminal and b/p's stems are out -- those tails slashed through the
+# bowl or turned r into c and f into t.
+EXIT_MAX_INSET = 120
+
 # Cursive loops. Ascenders (a full-height 2-pt vertical stem) get an
 # up-stroke that bows LOOP_W out to the right and rejoins the stem at
 # its apex, closing the loop where it leaves the stem near x-height --
@@ -104,44 +111,79 @@ def _cubic(p0: Point, p1: Point, p2: Point, p3: Point, n: int = 14) -> list[Poin
     return pts
 
 
-def _exit_point(strokes: list[dict]) -> Point | None:
-    """Where the pen leaves the letter: the rightmost open-stroke endpoint
-    inside the exit zone, else (for bowl-final letters like o) the
-    rightmost point anywhere on a stroke inside the zone.
+def _ground_stem(strokes: list[dict]) -> list[dict]:
+    """u's right stem stops where its bowl begins, so the pen never
+    reaches the baseline on that side. Run such a stem -- a vertical on
+    the letter's right whose foot hangs in the exit zone, joined to
+    another stroke -- down to the baseline, giving the tail a foot to
+    leave from (as on a/d/n) instead of dangling off the junction."""
+    x_max = max(x for s in strokes for x, _ in s["pts"])
+    ends = [p for s in strokes if not s["closed"] for p in (s["pts"][0], s["pts"][-1])]
+    out = []
+    for s in strokes:
+        if _vertical_stem(s):
+            i = 0 if s["pts"][0][1] < s["pts"][1][1] else 1
+            foot = s["pts"][i]
+            if (
+                0 < foot[1] <= EXIT_ZONE_Y[1]
+                and foot[0] >= x_max - EXIT_MAX_INSET
+                and sum(1 for e in ends if math.dist(e, foot) < 1) > 1
+            ):
+                pts = list(s["pts"])
+                pts[i] = (foot[0], 0.0)
+                s = {**s, "pts": pts}
+        out.append(s)
+    return out
+
+
+def _exit(strokes: list[dict]) -> tuple[Point, Point] | None:
+    """Where the pen leaves the letter, and the direction it is
+    travelling there: the rightmost pen-lift inside the exit zone. A
+    pen-lift is an open stroke's endpoint that no other stroke shares
+    (e's crossbar meets its bowl at the right; the pen does not lift
+    there). None when that point is not on the letter's right side: a
+    tail from b/p/r/s/f's left would run through or under the letter's
+    own body.
     """
     lo, hi = EXIT_ZONE_Y
-
-    def in_zone(p: Point) -> bool:
-        return lo <= p[1] <= hi
-
-    endpoints = [
-        p
-        for s in strokes
-        if not s["closed"] and len(s["pts"]) >= 2
-        for p in (s["pts"][0], s["pts"][-1])
-        if in_zone(p)
+    opens = [s["pts"] for s in strokes if not s["closed"] and len(s["pts"]) >= 2]
+    ends = [(p[i], p[i + step]) for p in opens for i, step in ((0, 1), (-1, -1))]
+    lifts = [
+        (at, prev)
+        for at, prev in ends
+        if lo <= at[1] <= hi and sum(1 for e, _ in ends if math.dist(e, at) < 1) == 1
     ]
-    if endpoints:
-        return max(endpoints, key=lambda p: p[0])
-    everywhere = [p for s in strokes for p in s["pts"] if in_zone(p)]
-    if everywhere:
-        return max(everywhere, key=lambda p: p[0])
-    return None
+    if not lifts:
+        return None
+    at, prev = max(lifts, key=lambda e: e[0][0])
+    x_max = max(x for s in strokes for x, _ in s["pts"])
+    if at[0] < x_max - EXIT_MAX_INSET:
+        return None
+    d = math.hypot(at[0] - prev[0], at[1] - prev[1]) or 1.0
+    return at, ((at[0] - prev[0]) / d, (at[1] - prev[1]) / d)
 
 
 def _exit_tail(strokes: list[dict]) -> dict | None:
-    start = _exit_point(strokes)
-    if start is None:
+    found = _exit(strokes)
+    if found is None:
         return None
+    start, (dx, dy) = found
     x_max = max(x for s in strokes for x, _ in s["pts"])
     end = (x_max + REACH, JOIN_Y)
     span = end[0] - start[0]
     if span <= 0:
         return None
-    # Sag close to the baseline before hooking up late -- a rounder,
-    # more pen-like swash than an even S-curve.
-    c1 = (start[0] + span * 0.22, start[1] * 0.12)
-    c2 = (end[0] - span * 0.30, JOIN_Y * 0.18)
+    if dx > 0 and dy > 0:
+        # The pen is already rising to the right (c, e): carry that
+        # motion on. Sagging first hung a hook off the terminal.
+        lead = span * 0.35
+        c1 = (start[0] + dx * lead, min(start[1] + dy * lead, max(start[1], JOIN_Y)))
+        c2 = (end[0] - span * 0.35, max(start[1], JOIN_Y * 0.85))
+    else:
+        # Sag close to the baseline before hooking up late -- a rounder,
+        # more pen-like swash than an even S-curve.
+        c1 = (start[0] + span * 0.22, start[1] * 0.12)
+        c2 = (end[0] - span * 0.30, JOIN_Y * 0.18)
     width = max(s["width"] for s in strokes) * TAIL_WIDTH_RATIO
     return {
         "pts": _cubic(start, c1, c2, end),
@@ -267,8 +309,11 @@ def script_strokes(name: str, fn, bow: bool = False) -> list[dict]:
         # geometry -- a bowed stem gains interior points that would
         # otherwise masquerade as exit candidates (j grew a bogus tail).
         if name not in NO_TAIL:
-            make_tail = _top_exit_tail if name in TOP_EXIT else _exit_tail
-            tail = make_tail(strokes)
+            if name in TOP_EXIT:
+                tail = _top_exit_tail(strokes)
+            else:
+                strokes = _ground_stem(strokes)
+                tail = _exit_tail(strokes)
             if tail is not None:
                 strokes = strokes + [tail]
     if bow:
