@@ -5,7 +5,7 @@ description = "Add your description here"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fonttools>=4.66.1",
+    "fonttools>=4.67.0",
     "pillow>=13.0.0",
     "shapely>=2.2.0",
 ]
